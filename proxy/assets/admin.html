@@ -734,6 +734,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
           <button type="button" data-mode="on" onclick="setStmProxyMode('on')">始终走代理</button>
           <button type="button" data-mode="off" onclick="setStmProxyMode('off')">NAS直连</button>
           <button type="button" data-mode="fnos" onclick="setStmProxyMode('fnos')">📱 fn客户端直连</button>
+          <button type="button" data-mode="fnos_proxy" onclick="setStmProxyMode('fnos_proxy')">🛡️ 客户端直连走代理</button>
         </div>
         <div class="hint" id="stmProxyModeHint" style="margin-top:6px"></div>
         <div class="row" style="margin-top:10px;align-items:center;gap:8px;flex-wrap:wrap">
@@ -2366,7 +2367,8 @@ const STM_MODE_HINT={
   off:"NAS直连：由 NAS 服务器直连拉取视频流与切片并转发给播放器（忽略已配置的代理地址）。",
   auto:"🪄 智能：NAS 优先直连；仅当直连失败/超时的视频 CDN 自动切到 NAS 代理。",
   on:"始终走代理：所有 m3u8 清单与 100% 的 ts 分片均强制经 NAS 代理中转。",
-  fnos:"📱 fn客户端直连（LunaTV架构）：服务端仅抓取并净化 m3u8 清单（去广告+内嵌密钥），所有 .ts 视频分片直连源站 CDN，扩展 0 流量转发、极致省资源。"
+  fnos:"📱 fn客户端直连（LunaTV架构）：服务端直连抓 m3u8 清单（去广告+内嵌密钥），.ts 分片由客户端直连 CDN，扩展 0 流量转发。",
+  fnos_proxy:"🛡️ 客户端直连走代理（OVS网卡专用）：服务端强制走代理抓 m3u8 清单与密钥（绕开NAS直连问题），.ts 视频分片由客户端直连 CDN，兼顾连通与零转发开销。"
 };
 function renderStmProxyMode(){
   const mode=(CFG&&CFG.stream_proxy_mode)||"off",seg=$("stmProxyMode"),hint=$("stmProxyModeHint");
@@ -2388,7 +2390,7 @@ async function setStmProxyMode(mode){
   if(mode!=="off"&&mode!=="fnos"&&proxy&&proxy!==((CFG&&CFG.stream_proxy)||""))await saveStmProxy(false);
   const r=await jpost("/v/api/ext/stream-proxy",{proxy:(CFG&&CFG.stream_proxy)||"",mode});
   if(r.code===0){CFG.stream_proxy_mode=(r.data&&r.data.mode)||mode;renderStmProxyMode();
-    toast({auto:"已切换为智能切换",on:"已切换为始终走代理",off:"已切换为NAS直连",fnos:"已切换为📱 fn客户端直连（LunaTV架构：清单净化+切片直连）"}[mode]||"已切换");
+    toast({auto:"已切换为智能切换",on:"已切换为始终走代理",off:"已切换为NAS直连",fnos:"已切换为📱 fn客户端直连（清单直连+切片直连）",fnos_proxy:"已切换为🛡️ 客户端直连走代理（代理抓清单+客户端直连切片）"}[mode]||"已切换");
   }else toast(r.msg||"切换失败","fail");
 }
 function onStmProxyToggle(){

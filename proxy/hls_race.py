@@ -40,7 +40,7 @@ def _get_stream_client(request: Request, url: str = "", force_proxy: bool = Fals
     host = urllib.parse.urlsplit(url).netloc.lower() if url else ""
     if host.endswith((".quark.cn", ".uc.cn")) or host.startswith(("127.0.0.1", "localhost")):
         return ext_client(request)
-    use_proxy = force_proxy or (mode == "on") or (mode == "auto" and host in _STREAM_PROXY_HOSTS)
+    use_proxy = force_proxy or (mode in ("on", "fnos_proxy")) or (mode == "auto" and host in _STREAM_PROXY_HOSTS)
     if not use_proxy:
         return ext_client(request)
     cli = _STREAM_CLIENTS.get(px)
@@ -1514,7 +1514,7 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
         return f"dec=1&k={b64e(decrypt_key.hex())}&iv={b64e(iv.hex())}"
 
     from app import config as _cfg_luna
-    _is_fnos_direct = (_cfg_luna.stream_proxy_mode() == "fnos" and "/v/api/ext/pan/" not in cur)
+    _is_fnos_direct = (_cfg_luna.stream_proxy_mode() in ("fnos", "fnos_proxy") and "/v/api/ext/pan/" not in cur)
     compact_i = 0
     for raw in text.splitlines():
         line = raw.strip()
@@ -2931,7 +2931,7 @@ async def hls_seg(mg: str, request: Request):
                 _cached_seg[0], status_code=200, media_type=_cached_seg[1],
                 headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*", "X-Fnmedia-Seg-Cache": "HIT"})
     _use_nas_px = bool(_cfg_seg.stream_proxy()) and (
-        _cfg_seg.stream_proxy_mode() == "on"
+        _cfg_seg.stream_proxy_mode() in ("on", "fnos_proxy")
         or (_cfg_seg.stream_proxy_mode() == "auto" and urllib.parse.urlsplit(src_url).netloc.lower() in _STREAM_PROXY_HOSTS)
     )
     if request.query_params.get("dec") != "1" and not _use_nas_px and _pf_n <= 0:

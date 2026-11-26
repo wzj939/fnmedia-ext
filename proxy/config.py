@@ -922,10 +922,10 @@ class Config:
             return True, "ok"
 
     def set_source_proxy_mode(self, mode: str) -> tuple[bool, str]:
-        """设置资源站代理模式：off/on/auto/fnos。"""
+        """设置资源站代理模式：off/on/auto/fnos/fnos_proxy。"""
         m = str(mode or "auto").strip().lower()
-        if m not in ("off", "on", "auto", "fnos"):
-            return False, "模式须为 off/on/auto/fnos/fnos"
+        if m not in ("off", "on", "auto", "fnos", "fnos_proxy"):
+            return False, "模式须为 off/on/auto/fnos/fnos_proxy/fnos"
         with _LOCK:
             cfg = self._copy_current()
             cfg["source_proxy_mode"] = m
@@ -935,7 +935,7 @@ class Config:
     def source_proxy_mode(self) -> str:
         try:
             m = str(self.get().get("source_proxy_mode") or "auto").strip().lower()
-            return m if m in ("off", "on", "auto", "fnos") else "auto"
+            return m if m in ("off", "on", "auto", "fnos", "fnos_proxy") else "auto"
         except Exception:
             _log.debug("source_proxy_mode failed", exc_info=True)
             return "auto"
@@ -955,8 +955,8 @@ class Config:
 
     def set_stream_proxy_mode(self, mode: str) -> tuple[bool, str]:
         m = str(mode or "off").strip().lower()
-        if m not in ("off", "on", "auto", "fnos"):
-            return False, "模式须为 off/on/auto/fnos"
+        if m not in ("off", "on", "auto", "fnos", "fnos_proxy"):
+            return False, "模式须为 off/on/auto/fnos/fnos_proxy"
         with _LOCK:
             cfg = self._copy_current()
             cfg["stream_proxy_mode"] = m
@@ -972,7 +972,7 @@ class Config:
     def stream_proxy_mode(self) -> str:
         try:
             m = str(self.get().get("stream_proxy_mode") or "off").strip().lower()
-            return m if m in ("off", "on", "auto", "fnos") else "off"
+            return m if m in ("off", "on", "auto", "fnos", "fnos_proxy") else "off"
         except Exception:
             return "off"
 
