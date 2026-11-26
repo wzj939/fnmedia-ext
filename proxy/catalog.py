@@ -656,11 +656,12 @@ class Catalog:
                     want = classify_source_class(
                         str(cl.get("type_name") or ""), allowed)
                     if cl.get("cat") != want:
-                        _log.info(
-                            "route state stale after classify change: "
-                            "sid=%s type=%r saved=%s now=%s; re-probe all",
-                            sid, cl.get("type_name"), cl.get("cat"), want)
-                        return False
+                        if want is not None:
+                            cl["cat"] = want
+                            _log.debug(
+                                "route state migrated in-place: "
+                                "sid=%s type=%r -> %s",
+                                sid, cl.get("type_name"), want)
         except Exception:  # noqa: BLE001
             _log.debug("route state revalidate failed", exc_info=True)
             return False
