@@ -90,7 +90,7 @@ def proxy_mode() -> str:
     try:
         from config import config as _cfg
         m = str(_cfg.source_proxy_mode() or "auto").strip().lower()
-        return m if m in ("off", "on", "auto") else "auto"
+        return m if m in ("off", "on", "auto", "fnos") else "auto"
     except Exception:  # noqa: BLE001
         _log.debug("proxy_mode failed", exc_info=True)
         return "auto"

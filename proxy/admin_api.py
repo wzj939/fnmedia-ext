@@ -1295,7 +1295,7 @@ async def ext_set_source_proxy(request: Request):
     ok, msg = config.set_source_proxy(px)
     if not ok:
         return JSONResponse({"code": 400, "msg": msg}, status_code=400)
-    # 代理模式：off/on/auto（缺省保持不变）
+    # 代理模式：off/on/auto/fnos（缺省保持不变）
     if body.get("mode") is not None:
         mok, mmsg = config.set_source_proxy_mode(str(body.get("mode")))
         if not mok:
