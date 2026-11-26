@@ -26,7 +26,7 @@ import re
 import sys
 from pathlib import Path
 
-_TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)-fpk$")
+_TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+(?:-\d+)?)-fpk$")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -41,3 +41,4 @@ dist/
 
 # 海阔 live 回归报告（每次跑真实 host 的结果，不入库）
 /tests/haikuo_live_regression_report.json
+PRIVATE_NOTES.md

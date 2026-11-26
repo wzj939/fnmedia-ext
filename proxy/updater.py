@@ -159,7 +159,7 @@ def _pick_asset(assets: list[dict], full: bool) -> dict | None:
         elif re.match(r"^fnmedia-ext-.+\.fpk$", name):
             lite_plain = a
     if full:
-        return full_pkg
+        return full_pkg or lite_plain
     return lite_plain or lite_alt
 
 
