@@ -53,7 +53,9 @@ def _days(value) -> int:
         return 1
 
 
-def register(url: str, *, name: str = "", refresh_days=1) -> dict:
+def register(url: str, *, name: str = "", refresh_days=1,
+             standalone: bool | None = None, merge: bool | None = None,
+             adult: bool | None = None) -> dict:
     url = str(url or "").strip()
     if not url:
         return {}
@@ -62,6 +64,9 @@ def register(url: str, *, name: str = "", refresh_days=1) -> dict:
     rec = {"url": url, "name": name or old.get("name", ""),
            "refresh_days": _days(refresh_days if refresh_days is not None
                                   else old.get("refresh_days", 1)),
+           "standalone": bool(standalone) if standalone is not None else bool(old.get("standalone", False)),
+           "merge": bool(merge) if merge is not None else bool(old.get("merge", False)),
+           "adult": bool(adult) if adult is not None else bool(old.get("adult", False)),
            "last_sync": int(time.time()), "fail_streak": 0, "last_error": ""}
     items[url] = rec
     _save(items)

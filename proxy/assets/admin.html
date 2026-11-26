@@ -657,7 +657,14 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
           <input type="text" id="addApi" placeholder="苹果CMS JSON 接口，如 https://xxx.com/api.php/provide/vod/at/json"/>
           <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
             <input type="checkbox" id="addStandalone" style="width:15px;height:15px;accent-color:var(--accent)"/>独立库</label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer" title="导入订阅时，把所有可用源合并进同一个独立媒体库（需填写左侧名称）">
+            <input type="checkbox" id="addMergeLib" style="width:15px;height:15px;accent-color:var(--accent)"/>合并库</label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer" title="标记为限制级（18+）：与主库隔离、不进全局搜索">
+            <input type="checkbox" id="addAdult" style="width:15px;height:15px;accent-color:#be123c"/>🔞隔离</label>
           <button class="primary small" style="justify-content:center" onclick="addSource()">添加</button>
+        </div>
+        <div class="hint" style="margin-top:6px">
+          <b>【批量导入合并库】</b>：在「名称」填库名（如 <code>R18合集</code>）→ 接口框填入订阅链接（支持 TVBox / MoonTV-SUB）或粘贴 Base58/JSON 文本 → 同时勾选「独立库」+「合并库」→ 点「添加」，即可聚合成同一张独立媒体库卡片。
         </div>
         <div class="hint">「独立库」= 该站单独生成一张媒体库卡片；「非过滤」= 不按标题/备注过滤解说/预告/花絮；
           <!-- >>> PRIVATE:ADULT -->
@@ -688,6 +695,36 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
         </div>
         <div class="hint" id="srcProxyModeHint" style="margin-top:6px"></div>
         <div id="srcProxyMsg" class="muted sm" style="margin-top:6px"></div>
+      </details>
+
+      <details class="card">
+        <summary class="card-title" style="cursor:pointer">🎬 媒体播放流代理（m3u8 / ts 分片）</summary>
+        <p class="card-sub">仅用于视频播放流（HLS 清单与切片、直链）；默认关闭直连，避免消耗代理流量。留空即直连。</p>
+        <div class="row">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="stmProxyEnable" style="width:14px;height:14px;accent-color:var(--accent)" onchange="onStmProxyToggle()"/> 启用播放流代理</label>
+        </div>
+        <div class="row">
+          <input type="text" id="stmProxyUrl" placeholder="http://127.0.0.1:7890" style="flex:2" disabled/>
+          <button class="small primary" id="stmProxySaveBtn" onclick="saveStmProxy(true)" disabled>保存并测试</button>
+          <button class="small ghost danger" id="stmProxyClearBtn" onclick="clearStmProxy()" disabled>清空</button>
+        </div>
+        <div class="seg" id="stmProxyMode" style="margin-top:10px" role="tablist">
+          <button type="button" data-mode="auto" onclick="setStmProxyMode('auto')">🪄 智能</button>
+          <button type="button" data-mode="on" onclick="setStmProxyMode('on')">始终走代理</button>
+          <button type="button" data-mode="off" onclick="setStmProxyMode('off')">NAS直连</button>
+        </div>
+        <div class="hint" id="stmProxyModeHint" style="margin-top:6px"></div>
+        <div class="row" style="margin-top:10px;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="sm">⚡ 服务端切片预读缓存：</span>
+          <div class="seg" id="stmPrefetchSegs" role="tablist">
+            <button type="button" data-pf="0" onclick="setStmPrefetch(0)">关闭</button>
+            <button type="button" data-pf="3" onclick="setStmPrefetch(3)">3 片（推荐）</button>
+            <button type="button" data-pf="6" onclick="setStmPrefetch(6)">6 片</button>
+            <button type="button" data-pf="10" onclick="setStmPrefetch(10)">10 片</button>
+          </div>
+        </div>
+        <div id="stmProxyMsg" class="muted sm" style="margin-top:6px"></div>
       </details>
 
       <div class="card">
@@ -1295,7 +1332,7 @@ async function switchPage(page){
   if(page==="library"){loadLibs().then(renderLibrary);}
   if(page==="quality")renderQuality();
   if(page==="search"){try{loadCacheMemory();}catch(e){}try{loadPosterDisk();}catch(e){}}
-  if(page==="sources"){try{loadHealth();}catch(e){}try{initSrcProxy();}catch(e){}}
+  if(page==="sources"){try{loadHealth();}catch(e){}try{initSrcProxy();}catch(e){}try{initStmProxy();}catch(e){}}
   if(page==="importsub"){try{if(!CFG)await loadStatus();}catch(e){}try{if(typeof initSubProxy==="function")initSubProxy();}catch(e){}try{loadAdfilter();}catch(e){}try{if(typeof loadDrpyMgmt==="function")loadDrpyMgmt();}catch(e){}}
   if(page==="about"){loadUpdate(false);try{loadAdminToken();}catch(e){}}
   // >>> PRIVATE:SCANLOGIN
@@ -2212,10 +2249,28 @@ async function resetHealth(key){
   await jpost("/v/api/ext/source-health/reset",{key});loadHealth();
 }
 async function addSource(){
-  const name=$("addName").value.trim(),api=$("addApi").value.trim(),standalone=$("addStandalone").checked;
+  const name=$("addName").value.trim(),api=$("addApi").value.trim(),
+        standalone=$("addStandalone").checked,merge=$("addMergeLib").checked,adult=$("addAdult").checked;
   if(!api){toast("请填写接口地址","fail");return;}
-  const r=await jpost("/v/api/ext/source/add",{name,api,standalone});
-  if(r.code===0){toast("已添加");$("addName").value="";$("addApi").value="";$("addStandalone").checked=false;
+  if(merge && !name){toast("勾选「合并库」时请在左侧填写库名称","fail");return;}
+  const isSingle=/provide\/vod|^drpy:\/\/|^pansou:\/\//i.test(api);
+  if(!isSingle){
+    toast("识别为订阅/合集，正在解析导入…");
+    const st=standalone||merge||adult;
+    const payload=/^https?:\/\//i.test(api)?{url:api,standalone:st,name,merge,adult}:{text:api,standalone:st,name,merge,adult};
+    const r=await jpost("/v/api/ext/source/import-subscription",payload);
+    if(r.code===0){
+      const d=r.data||{};
+      toast(`导入成功：新增 ${d.added||0} 条`+(d.group?`（已合并至「${d.group}」）`:""));
+      $("addName").value="";$("addApi").value="";
+      $("addStandalone").checked=false;$("addMergeLib").checked=false;$("addAdult").checked=false;
+      await loadStatus();
+    }else toast(r.msg||"订阅解析失败","fail");
+    return;
+  }
+  const r=await jpost("/v/api/ext/source/add",{name,api,standalone,adult});
+  if(r.code===0){toast("已添加");$("addName").value="";$("addApi").value="";
+    $("addStandalone").checked=false;$("addMergeLib").checked=false;$("addAdult").checked=false;
     await loadStatus();const tr=$("srcRows").querySelector(`tr[data-id="${r.data.id}"]`);if(tr&&!standalone)testOne(r.data.id,tr);}
   else toast(r.msg||"添加失败","fail");
 }
@@ -2275,6 +2330,74 @@ async function clearSrcProxy(){
     $("srcProxyUrl").value="";$("srcProxyEnable").checked=false;
     $("srcProxyUrl").disabled=true;$("srcProxySaveBtn").disabled=true;$("srcProxyClearBtn").disabled=true;
     renderSrcProxyMode();$("srcProxyMsg").textContent="已清空，当前直连";toast("已清空代理");
+  }else toast(r.msg||"失败","fail");
+}
+/* ---------- 媒体播放流代理（m3u8 / ts 分片） ---------- */
+function initStmProxy(){
+  const p=(CFG&&CFG.stream_proxy)||"";
+  const en=$("stmProxyEnable"),inp=$("stmProxyUrl"),sb=$("stmProxySaveBtn"),cb=$("stmProxyClearBtn"),msg=$("stmProxyMsg");
+  if(!en)return;
+  inp.value=p;en.checked=!!p;inp.disabled=!en.checked;sb.disabled=!en.checked;cb.disabled=!p;
+  msg.textContent=p?"播放流按下方模式决定是否经代理":"当前未设代理（NAS直连）";
+  msg.style.color="";renderStmProxyMode();
+}
+const STM_MODE_HINT={
+  off:"NAS直连：由 NAS 服务器直连拉取视频流与切片并转发给播放器（忽略已配置的代理地址）。",
+  auto:"🪄 智能：NAS 优先直连；仅当直连失败/超时的视频 CDN 自动切到 NAS 代理。",
+  on:"始终走代理：所有 m3u8 清单与 100% 的 ts 分片均强制经 NAS 代理中转。"
+};
+function renderStmProxyMode(){
+  const mode=(CFG&&CFG.stream_proxy_mode)||"off",seg=$("stmProxyMode"),hint=$("stmProxyModeHint");
+  if(seg){
+    seg.querySelectorAll("button").forEach(b=>b.classList.toggle("active",b.dataset.mode===mode));
+    if(hint)hint.textContent=STM_MODE_HINT[mode]||STM_MODE_HINT.off;
+  }
+  const pf=String((CFG&&CFG.stream_prefetch_segs)||0),pfSeg=$("stmPrefetchSegs");
+  if(pfSeg)pfSeg.querySelectorAll("button").forEach(b=>b.classList.toggle("active",b.dataset.pf===pf));
+}
+async function setStmPrefetch(n){
+  const r=await jpost("/v/api/ext/stream-proxy",{proxy:(CFG&&CFG.stream_proxy)||"",prefetch_segs:n});
+  if(r.code===0){CFG.stream_prefetch_segs=n;renderStmProxyMode();
+    toast(n>0?`已开启服务端切片预读缓存（提前缓存 ${n} 片）`:"已关闭服务端切片预读缓存");}
+  else toast(r.msg||"设置失败","fail");
+}
+async function setStmProxyMode(mode){
+  const proxy=$("stmProxyUrl").value.trim();
+  if(mode!=="off"&&proxy&&proxy!==((CFG&&CFG.stream_proxy)||""))await saveStmProxy(false);
+  const r=await jpost("/v/api/ext/stream-proxy",{proxy:(CFG&&CFG.stream_proxy)||"",mode});
+  if(r.code===0){CFG.stream_proxy_mode=(r.data&&r.data.mode)||mode;renderStmProxyMode();
+    toast({auto:"已切换为智能切换",on:"已切换为始终走代理",off:"已切换为NAS直连"}[mode]||"已切换");
+  }else toast(r.msg||"切换失败","fail");
+}
+function onStmProxyToggle(){
+  const en=$("stmProxyEnable"),inp=$("stmProxyUrl"),sb=$("stmProxySaveBtn");
+  inp.disabled=!en.checked;sb.disabled=!en.checked;if(en.checked)inp.focus();
+}
+async function saveStmProxy(test){
+  const inp=$("stmProxyUrl"),msg=$("stmProxyMsg"),proxy=inp.value.trim();
+  if(!proxy){toast("请填写代理地址，或点清空直连","fail");return;}
+  msg.textContent="保存并测试代理连通性…";msg.style.color="";
+  try{
+    let mode=(CFG&&CFG.stream_proxy_mode)||"off";
+    if(mode==="off")mode="auto";
+    const r=await jpost("/v/api/ext/stream-proxy",{proxy,mode});
+    if(r.code!==0){msg.textContent="未保存："+(r.msg||"格式错误");msg.style.color="var(--err)";return;}
+    CFG.stream_proxy=proxy;CFG.stream_proxy_mode=(r.data&&r.data.mode)||mode;renderStmProxyMode();
+    const d=r.data||{};
+    if(test){msg.textContent=d.test_ok?("✓ 已保存，"+(d.test_msg||"连通成功"))
+      :("已保存，但代理测试失败："+(d.test_msg||"请检查代理端口"));
+      msg.style.color=d.test_ok?"var(--ok)":"var(--warn)";
+    }else msg.textContent="已保存";
+    $("stmProxyClearBtn").disabled=false;toast("播放流代理已保存");
+  }catch(e){msg.textContent="请求失败："+String(e);msg.style.color="var(--err)";}
+}
+async function clearStmProxy(){
+  if(!confirm("清空播放流代理地址并全部直连？"))return;
+  const r=await jpost("/v/api/ext/stream-proxy",{proxy:"",mode:"off"});
+  if(r.code===0){CFG.stream_proxy="";CFG.stream_proxy_mode="off";
+    $("stmProxyUrl").value="";$("stmProxyEnable").checked=false;
+    $("stmProxyUrl").disabled=true;$("stmProxySaveBtn").disabled=true;$("stmProxyClearBtn").disabled=true;
+    renderStmProxyMode();$("stmProxyMsg").textContent="已清空，当前直连";toast("已清空代理");
   }else toast(r.msg||"失败","fail");
 }
 // ---------- 订阅抓取代理（仅拉订阅/jar/脚本，不影响播放） ----------
@@ -2893,7 +3016,7 @@ async function init(){
   $("linePredictZeroRace").checked=CFG.linepredict_zero_race!==false;
   $("browseProbe").checked=CFG.browse_probe!==false;  $("linePredictMax").value=CFG.linepredict_max_lines||3;
   $("linePredictTtl").value=CFG.linepredict_ttl_min||30;
-  renderKw();bindSrcDelegate();renderSources();initSrcProxy();
+  renderKw();bindSrcDelegate();renderSources();initSrcProxy();initStmProxy();
   const gs=$("globalState");gs.textContent="接管运行中 · 已缓存 "+STATUS.cached_titles;gs.className="dot ok";
   const ed=$("aboutEdition");if(ed)ed.textContent=(FEAT_DDUO?"完整版（本地全功能）":"公开版")+" · 在飞牛原生搜索与媒体库中注入在线影视";
   loadOnline();

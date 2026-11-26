@@ -242,20 +242,72 @@ def _fongmi_decrypt(text: str) -> str | None:
         return None
 
 
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_B58_MAP = {c: i for i, c in enumerate(_B58_ALPHABET)}
+
+
+def _b58_try(text: str) -> str | None:
+    """解码 MoonTV / LunaTV 常用的 Base58 编码订阅载荷。"""
+    t = text.strip()
+    if len(t) < 20 or any(ch not in _B58_MAP for ch in t):
+        return None
+    try:
+        num = 0
+        for ch in t:
+            num = num * 58 + _B58_MAP[ch]
+        raw = num.to_bytes((num.bit_length() + 7) // 8, "big") if num > 0 else b""
+        pad = len(t) - len(t.lstrip("1"))
+        raw = (b"\x00" * pad) + raw
+        s = raw.decode("utf-8", "ignore")
+        if '"api_site"' in s or '"sites"' in s or s.lstrip().startswith("{"):
+            return s
+    except Exception:
+        _log.debug("_b58_try failed", exc_info=True)
+    return None
+
+
+def _normalize_moontv_dict(cfg: dict | None) -> dict | None:
+    """兼容 MoonTV / LunaTV / DecoTV 格式（{"api_site": {"key": {"api":..., "name":...}}}）。"""
+    if not isinstance(cfg, dict):
+        return cfg
+    if "sites" not in cfg and isinstance(cfg.get("api_site"), dict):
+        sites: list[dict] = []
+        for k, v in cfg["api_site"].items():
+            if not isinstance(v, dict):
+                continue
+            api = str(v.get("api") or "").strip()
+            if not api:
+                continue
+            name = str(v.get("name") or k).strip()
+            sites.append({
+                "key": str(k),
+                "name": name,
+                "type": 1,
+                "api": api,
+                "searchable": 1,
+            })
+        cfg = dict(cfg)
+        cfg["sites"] = sites
+    return cfg
+
+
 def parse_config_text(text: str) -> dict | None:
-    """把文本解析成配置 dict；支持裸 JSON、JSONC(//注释)、base64 包裹、
-    以及 FongMi 加密订阅（hex + AES-128-CBC）。"""
+    """把文本解析成配置 dict；支持裸 JSON、JSONC(//注释)、base64、Base58、
+    FongMi 加密订阅（hex + AES-128-CBC）以及 MoonTV/LunaTV api_site 格式。"""
     text = (text or "").strip()
     if not text:
         return None
     cfg = _json_loads_dict(text)
     if cfg is not None:
-        return cfg
-    decoded = _b64_try(text)
-    if decoded:
-        cfg = _json_loads_dict(decoded)
-        if cfg is not None:
-            return cfg
+        return _normalize_moontv_dict(cfg)
+    for decoder in (_b64_try, _b58_try):
+        decoded = decoder(text)
+        if decoded:
+            i = decoded.find("{")
+            cand = decoded[i:] if i >= 0 else decoded
+            cfg = _json_loads_dict(cand)
+            if cfg is not None:
+                return _normalize_moontv_dict(cfg)
     # FongMi 加密订阅（hex 密文）
     dec = _fongmi_decrypt(text)
     if dec:
@@ -263,10 +315,10 @@ def parse_config_text(text: str) -> dict | None:
         if i >= 0:
             cfg = _json_loads_dict(dec[i:])
             if cfg is not None:
-                return cfg
+                return _normalize_moontv_dict(cfg)
         cfg = _json_loads_dict(dec)
         if cfg is not None:
-            return cfg
+            return _normalize_moontv_dict(cfg)
     return None
 
 

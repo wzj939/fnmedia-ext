@@ -1135,6 +1135,44 @@ async def ext_set_subscription_proxy(request: Request):
                      "test_msg": ("直连（未设置代理）" if not px else test_msg)}}
 
 
+@admin_router.post("/v/api/ext/stream-proxy")
+async def ext_set_stream_proxy(request: Request):
+    """设置/清空「媒体播放流」专用代理（HLS m3u8 / ts 分片 / 直链）。"""
+    from app import config
+    import hls_race
+    body = await request.json()
+    px = str(body.get("proxy", "") or "").strip()
+    ok, msg = config.set_stream_proxy(px)
+    if not ok:
+        return JSONResponse({"code": 400, "msg": msg}, status_code=400)
+    if body.get("mode") is not None:
+        mok, mmsg = config.set_stream_proxy_mode(str(body.get("mode")))
+        if not mok:
+            return JSONResponse({"code": 400, "msg": mmsg}, status_code=400)
+    if body.get("prefetch_segs") is not None:
+        config.set_stream_prefetch_segs(body.get("prefetch_segs"))
+    mode = config.stream_proxy_mode()
+    hls_race.clear_stream_proxy_hosts()
+    test_ok, test_msg = False, ""
+    if px:
+        try:
+            import time as _t
+            import httpx
+            t0 = _t.monotonic()
+            async with httpx.AsyncClient(proxy=px, verify=False, timeout=8.0) as cli:
+                rr = await cli.get("https://baidu.com", headers={"User-Agent": "Mozilla/5.0"})
+            ms = int((_t.monotonic() - t0) * 1000)
+            test_ok = rr.status_code < 500
+            test_msg = f"代理连通 HTTP {rr.status_code} / {ms}ms"
+        except Exception as exc:
+            test_msg = f"{type(exc).__name__}: {str(exc)[:100]}"
+    return {"code": 0, "msg": "",
+            "data": {"proxy": config.stream_proxy(),
+                     "mode": mode,
+                     "test_ok": (True if not px else test_ok),
+                     "test_msg": ("直连（未设置代理）" if not px else test_msg)}}
+
+
 @admin_router.post("/v/api/ext/junk-keywords")
 async def ext_junk_keywords(request: Request):
     from app import _AGG_CACHE, _search_cache, app, config  # noqa: E402,F401 延迟导入：避免与 app.py 循环导入
@@ -1271,7 +1309,6 @@ async def ext_source_loose(request: Request):
     return {"code": 0, "msg": "ok"}
 
 
-# >>> PRIVATE:ADULT
 @admin_router.post("/v/api/ext/source/adult")
 async def ext_source_adult(request: Request):
     from app import _schedule_routes_refresh, app, config  # noqa: E402,F401 延迟导入：避免与 app.py 循环导入
@@ -1288,7 +1325,6 @@ async def ext_source_adult(request: Request):
         return JSONResponse({"code": 404, "msg": info}, status_code=404)
     _schedule_routes_refresh()
     return {"code": 0, "msg": "ok"}
-# <<< PRIVATE:ADULT
 
 
 @admin_router.post("/v/api/ext/source/delete")
@@ -1937,8 +1973,14 @@ async def ext_import_subscription(request: Request):
         if not pr.get("ok"):
             cms_failed.append(c["name"][:20])
             continue
-        ok, _info = config.add_source(c["name"], c["api"], True, standalone)
+        ok, _sid = config.add_source(c["name"], c["api"], True, standalone)
         if ok:
+            grp_name = str(body.get("name") or "").strip()
+            if standalone and bool(body.get("merge")) and grp_name and isinstance(_sid, str) and _sid:
+                _is_r18 = bool(body.get("adult")) or any(
+                    k in (grp_name + " " + str(body.get("url") or "")).lower()
+                    for k in ("r18", "18+", "成人", "福利", "adult"))
+                config.set_source_group(_sid, lib_group=grp_name, adult=_is_r18)
             cms_added.append(c["name"])
             existing.add(key)
         else:
@@ -2006,8 +2048,14 @@ async def ext_import_subscription(request: Request):
     sub_url = str(body.get("url") or "").strip()
     if sub_url:
         import subscriptions as _subsmod
-        _subsmod.register(sub_url, name=str(body.get("name") or ""),
-                          refresh_days=body.get("refresh_days", 1))
+        _subsmod.register(
+            sub_url,
+            name=str(body.get("name") or ""),
+            refresh_days=body.get("refresh_days", 1),
+            standalone=bool(body.get("standalone")),
+            merge=bool(body.get("merge")),
+            adult=bool(body.get("adult")),
+        )
 
     return {"code": 0, "msg": "", "data": {
         "scanned": len(raw_sites),
@@ -2056,9 +2104,16 @@ async def ext_subscriptions_refresh_now():
     import subscriptions as _subs
 
     async def _refresh(url: str):
+        rec = next((x for x in _subs.list_subscriptions() if x.get("url") == url), {})
         class _Req:
             async def json(self):
-                return {"url": url}
+                return {
+                    "url": url,
+                    "name": rec.get("name", ""),
+                    "standalone": bool(rec.get("standalone")),
+                    "merge": bool(rec.get("merge")),
+                    "adult": bool(rec.get("adult")),
+                }
         resp = await ext_import_subscription(_Req())
         # fork 的 ext_import_subscription 成功返回 dict，失败返回 JSONResponse
         code = resp.get("code") if isinstance(resp, dict) else 502

@@ -12,7 +12,7 @@ import time
 import httpx
 
 _log = logging.getLogger("fnmedia")
-_PRIVATE_CONF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catvod.local.json")
+_PRIVATE_CONF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state", "catvod.local.json")
 
 def _load_private() -> dict:
     try:

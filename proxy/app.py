@@ -18,6 +18,10 @@ import base64
 import hashlib
 import json
 import os
+try:
+    os.nice(10)
+except Exception:
+    pass
 import re
 import threading
 import time
@@ -375,7 +379,7 @@ def standalone_source_of(lib_guid: str, _ctx=None) -> str | None:
         return _ctx._standalone_map().get(lib_guid)
     if not lib_guid:
         return None
-    for s in config.all_sources():
+    for s in standalone_sources_active():
         if standalone_lib_guid(s["id"]) == lib_guid:
             return s["id"]
     return None
@@ -392,7 +396,29 @@ def hgdj_enabled() -> bool:
 
 
 def standalone_sources_active() -> list[dict]:
-    return [s for s in config.enabled_sources() if s.get("standalone")]
+    """返回独立的展示单元：同 lib_group 的源合并为一张虚拟独立库卡片。"""
+    out: list[dict] = []
+    seen_groups: set[str] = set()
+    for s in config.enabled_sources():
+        if not s.get("standalone"):
+            continue
+        grp = str(s.get("lib_group") or "").strip()
+        if grp:
+            if grp in seen_groups:
+                continue
+            seen_groups.add(grp)
+            members = [m for m in config.enabled_sources()
+                       if m.get("standalone") and str(m.get("lib_group") or "").strip() == grp]
+            out.append({
+                "id": f"group:{grp}",
+                "name": grp,
+                "standalone": True,
+                "adult": any(m.get("adult") for m in members),
+                "lib_group": grp,
+            })
+        else:
+            out.append(s)
+    return out
 
 
 async def _catalog_card_posters(cat: str, *, scope: str = catalogmod.AGG_SCOPE,
@@ -482,10 +508,8 @@ def _schedule_catalog_card_warm(cat: str, scope: str) -> None:
 
 def standalone_lib_name(src: dict) -> str:
     base = "📡" + (src.get("name") or src.get("id") or "")
-    # >>> PRIVATE:ADULT
     if features.ADULT and src.get("adult"):
         return "🔞" + base
-    # <<< PRIVATE:ADULT
     return base
 
 
@@ -2427,6 +2451,15 @@ async def _json_from_upstream(upstream: Response) -> dict | None:
 # 直接取自这些字典。原 guard 分支只在加固启用时向字典追加加固项，其余一律
 # 上游透传；guard 已移除（2026-11-12 上游同步），三条路由只剩透传，但路由
 # 本身不能删——删了前端拿不到字典。
+
+@app.middleware("http")
+async def _foreground_priority_middleware(request: Request, call_next):
+    p = request.url.path
+    if p.startswith("/v/api/v1/") or p.startswith("/v/media/online/"):
+        catalog.notify_foreground_activity(5.0)
+    return await call_next(request)
+
+
 @app.get("/v/api/v1/tag/genres")
 async def tag_genres(request: Request):
     return await forward_upstream(request)
@@ -2956,7 +2989,7 @@ async def mediadb_list(request: Request):
             ps: list[str] = []
             try:
                 scope_cats = list(catalogmod.CATALOG_CATEGORIES)
-                if catalogmod._welfare_on() and s.get("adult"):
+                if s.get("adult"):
                     scope_cats.extend((c, catalogmod.catalog_title(c), catalogmod.catalog_mdb(c))
                                       for c in catalogmod.WELFARE_CATS)
                 for cat, _title, _mdb in scope_cats:
@@ -3222,7 +3255,7 @@ async def mdb_detail(guid: str, request: Request):
     # 单源独立媒体库
     sscope = standalone_source_of(guid)
     if sscope and any(s["id"] == sscope for s in standalone_sources_active()):
-        src = next((s for s in config.all_sources() if s["id"] == sscope), {})
+        src = next((s for s in standalone_sources_active() if s["id"] == sscope), {})
         posters = []
         try:
             ps: list[str] = []
@@ -3329,7 +3362,7 @@ async def mediadb_sum(request: Request):
         scope = s["id"]
         if catalog.standalone_available(scope):
             pool = list(catalogmod.CATALOG_CATEGORIES)
-            if catalogmod._welfare_on() and s.get("adult"):
+            if s.get("adult"):
                 pool = pool + [(catalogmod.ADULT_CAT, "", "")]
             n = sum(catalog.total(c, scope) for c, _, _ in pool)
             if n:
@@ -4396,7 +4429,7 @@ async def item_detail(guid: str, request: Request):
             any(s["id"] == sscope for s in standalone_sources_active()):
         src = next((s for s in config.all_sources() if s["id"] == sscope), {})
         _pool = list(catalogmod.CATALOG_CATEGORIES)
-        if catalogmod._welfare_on() and src.get("adult"):
+        if src.get("adult"):
             _pool = _pool + [(catalogmod.ADULT_CAT, "", "")]
         n = sum(catalog.total(c, sscope) for c, _, _ in _pool)
         data = inj._base_item(
@@ -7236,7 +7269,9 @@ def _schedule_browse_probe(rows, request) -> None:
     try:
         if not _browse_probe_enabled():
             return
-        ogs = _browse_probe_guids(rows)
+        if len(_BROWSE_PROBE_TASKS) >= 2 or catalog._nas_is_busy():
+            return
+        ogs = (_browse_probe_guids(rows) or [])[:6]
         if not ogs:
             return
         task = _managed_task(_browse_probe_worker(ogs, request),

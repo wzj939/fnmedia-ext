@@ -159,7 +159,7 @@ def list_users() -> list[dict]:
         with _ro_connect(os.path.join(d, "trimmedia.db")) as c:
             rows = c.execute(
                 "SELECT guid,username,is_admin,status FROM user "
-                "WHERE guid<>'default-user-template' ORDER BY is_admin DESC, username"
+                "WHERE guid<>'default-user-template' AND status=1 AND username NOT LIKE '%_deleted_%' ORDER BY is_admin DESC, username"
             ).fetchall()
         return [{"guid": r["guid"], "name": r["username"] or r["guid"][:8],
                  "is_admin": bool(r["is_admin"]), "status": r["status"]} for r in rows]
