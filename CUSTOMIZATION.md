@@ -21,3 +21,8 @@
 ## 十、以原项目版本为基准的自动递增版本号机制（`1.2.8-1`、`1.2.9-1`...）
 * **严格对齐上游基线**：每次运行 `bash /vol1/1000/system/Dockerfile/fnmedia-ext/update_custom.sh` 时，脚本直接读取 `upstream/main:VERSION` 作为基准版本号（`UPSTREAM_VER`），查询已存在的 `v<UPSTREAM_VER>-<N>-fpk` 标签并自动递增为 `<UPSTREAM_VER>-<N+1>`（例如上游为 `1.2.8` 时生成 `1.2.8-1`、`1.2.8-2`；上游一旦更新到 `1.2.9`，自动从 `1.2.9-1` 重新递增）。
 * **云端与飞牛兼容性**：`tools/check_tag_version.py` 正则已放行 `^v(\d+\.\d+\.\d+(?:-\d+)?)-fpk$`；飞牛 `build.sh` 会自动截取前三位数字写入应用 `manifest`，同时在 `dist/` 与 GitHub Releases 生成带完整递增版本号的 `.fpk` 安装包。
+
+---
+
+## 十一、GitHub Release 自动附带定制说明规范
+* **发布说明自动读取**：`.github/workflows/build-fpk.yml` 中 `gh release create` 已将 `--generate-notes` 替换为 `--notes-file CUSTOMIZATION.md`，每次推送 `v<VERSION>-fpk` 标签触发云端构建时，会自动将本文件的全部定制说明写入对应 Release 的正文描述中。
