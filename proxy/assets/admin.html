@@ -733,6 +733,7 @@ pre.log{max-height:240px;overflow:auto;background:#0f1115;color:#d6dae0;border-r
           <button type="button" data-mode="auto" onclick="setStmProxyMode('auto')">🪄 智能</button>
           <button type="button" data-mode="on" onclick="setStmProxyMode('on')">始终走代理</button>
           <button type="button" data-mode="off" onclick="setStmProxyMode('off')">NAS直连</button>
+          <button type="button" data-mode="fnos" onclick="setStmProxyMode('fnos')">🚀 fnOS直连</button>
         </div>
         <div class="hint" id="stmProxyModeHint" style="margin-top:6px"></div>
         <div class="row" style="margin-top:10px;align-items:center;gap:8px;flex-wrap:wrap">
@@ -2364,7 +2365,8 @@ function initStmProxy(){
 const STM_MODE_HINT={
   off:"NAS直连：由 NAS 服务器直连拉取视频流与切片并转发给播放器（忽略已配置的代理地址）。",
   auto:"🪄 智能：NAS 优先直连；仅当直连失败/超时的视频 CDN 自动切到 NAS 代理。",
-  on:"始终走代理：所有 m3u8 清单与 100% 的 ts 分片均强制经 NAS 代理中转。"
+  on:"始终走代理：所有 m3u8 清单与 100% 的 ts 分片均强制经 NAS 代理中转。",
+  fnos:"🚀 fnOS直连：仅由扩展解析真实地址后 302 移交给飞牛客户端/网页端播放器直接拉流，扩展 0 转发、0 缓存、极致省资源。"
 };
 function renderStmProxyMode(){
   const mode=(CFG&&CFG.stream_proxy_mode)||"off",seg=$("stmProxyMode"),hint=$("stmProxyModeHint");
@@ -2383,10 +2385,10 @@ async function setStmPrefetch(n){
 }
 async function setStmProxyMode(mode){
   const proxy=$("stmProxyUrl").value.trim();
-  if(mode!=="off"&&proxy&&proxy!==((CFG&&CFG.stream_proxy)||""))await saveStmProxy(false);
+  if(mode!=="off"&&mode!=="fnos"&&proxy&&proxy!==((CFG&&CFG.stream_proxy)||""))await saveStmProxy(false);
   const r=await jpost("/v/api/ext/stream-proxy",{proxy:(CFG&&CFG.stream_proxy)||"",mode});
   if(r.code===0){CFG.stream_proxy_mode=(r.data&&r.data.mode)||mode;renderStmProxyMode();
-    toast({auto:"已切换为智能切换",on:"已切换为始终走代理",off:"已切换为NAS直连"}[mode]||"已切换");
+    toast({auto:"已切换为智能切换",on:"已切换为始终走代理",off:"已切换为NAS直连",fnos:"已切换为🚀 fnOS直连（全端302移交播放器）"}[mode]||"已切换");
   }else toast(r.msg||"切换失败","fail");
 }
 function onStmProxyToggle(){

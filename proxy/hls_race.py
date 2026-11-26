@@ -1391,6 +1391,12 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
     # 解析规则可能在部分源侧刷新 Referer/Cookie/User-Agent；必须读取更新后的 headers。
     headers = dict(picked.get("headers") or {})
     src_url = _self_url(picked["url"])
+    # fnOS直连模式：不拉取/改写 m3u8、不中转任何 ts 切片，直接交由调用方 302 移交客户端/网页端播放器直连
+    from app import config as _cfg_hls
+    if _cfg_hls.stream_proxy_mode() == "fnos" and src_url.startswith(("http://", "https://")) and "/v/api/ext/pan/" not in src_url:
+        _h_host = urllib.parse.urlsplit(src_url).netloc.lower()
+        if not _h_host.startswith(("127.0.0.1", "localhost")):
+            return _NOT_HLS, None
     # 解析后若发现其实是 mp4 直链（wrapper 预判为 HLS 时的兜底），交由调用方 302
     if not re.search(r"\.m3u8(\?|$)", src_url, re.I) \
             and re.search(r"\.mp4(\?|$)", src_url, re.I):
