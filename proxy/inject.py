@@ -366,6 +366,7 @@ def detail_item(b: dict) -> dict:
         "title": title,
         "logos": "",
         "original_title": "",
+        "poster": _poster(_f(b, "poster")),
         "backdrops": _poster(_f(b, "poster")),
         "posters": _poster(_f(b, "poster")),
         "poster_width": 0,

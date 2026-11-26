@@ -156,11 +156,31 @@ def normalize_card(row: dict, client: Client) -> dict:
     return out
 
 
+def _sync_poster_fields(d: dict) -> None:
+    """保证 poster / posters / backdrops 三字段互为兜底，兼容 Android/TV/Web 不同端取图字段。"""
+    pic = d.get("poster") or d.get("posters") or d.get("backdrops")
+    if isinstance(pic, list):
+        pic = pic[0] if pic else ""
+    if isinstance(pic, str) and pic:
+        if not d.get("poster"):
+            d["poster"] = pic
+        if not d.get("posters"):
+            d["posters"] = pic
+        if not d.get("backdrops"):
+            d["backdrops"] = pic
+
+
 def normalize_cards(rows, client: Client):
-    """批量规整列表卡片；非严格端零拷贝原样返回。"""
-    if not rows or not client.strict_card:
+    """批量规整列表卡片，并为全端补齐海报字段兜底。"""
+    if not rows:
         return rows
-    return [normalize_card(r, client) for r in rows]
+    out = []
+    for r in rows:
+        item = normalize_card(r, client) if client.strict_card else r
+        if isinstance(item, dict):
+            _sync_poster_fields(item)
+        out.append(item)
+    return out
 
 
 # 详情/播放 info 里需要补成完整日期的日期键（与列表模型同一种严格日期解析）。
@@ -168,14 +188,9 @@ _DATE_KEYS = ("release_date", "air_date")
 
 
 def normalize_detail(obj, client: Client):
-    """按端规整“详情/播放 info 单对象”。
-
-    与列表卡不同：详情模型依赖 can_play/play_item_guid/play_error/posters 等大量字段
-    才能进入播放页，故这里【绝不裁剪字段】，只把 TV 严格端会解析失败的形态归一：
-      * 年份/日期/空值 -> 合法 yyyy-MM-dd 或空串，状态与列表枚举一致。
-      * 递归处理内嵌的 item / Episode / Season 对象与列表。
-    手机/iOS/Web 原样返回。返回新对象，不修改入参。
-    """
+    """按端规整“详情/播放 info 单对象”，并为全端（含 Android 手机与 TV）补齐海报三字段兜底。"""
+    if isinstance(obj, dict):
+        _sync_poster_fields(obj)
     if not client.strict_card or not isinstance(obj, dict):
         return obj
 
