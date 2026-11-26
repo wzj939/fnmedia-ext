@@ -15,3 +15,9 @@
 * **Tag 命名必须带 `-fpk` 后缀**：工作流 `.github/workflows/build-fpk.yml` 会调用 `tools/check_tag_version.py` 校验标签格式，推送标签时必须使用 `v<VERSION>-fpk`（如 `v1.2.8-fpk`），否则校验步会直接退出。
 * **放行定制断言**：`.github/workflows/build-fpk.yml` 第 36 行已修改为 `python -m pytest tests/ -q || true`，避免新增配置项与防 504 让路逻辑触发上游静态断言阻断发布。
 * **全自动流水线**：运行 `bash /vol1/1000/system/Dockerfile/fnmedia-ext/update_custom.sh` 即可一站式完成上游同步、定制重放、本地 `.fpk` 编译以及推送 `-fpk` 标签触发云端 Release 自动发布。
+
+---
+
+## 十、自动递增定制版本号机制（`1.2.8-1`、`1.2.8-2`...）
+* **自动递增规则**：每次运行 `bash /vol1/1000/system/Dockerfile/fnmedia-ext/update_custom.sh` 时，脚本会先将 `VERSION` 对齐上游基底（避免 `git rebase` 冲突），随后自动查询已有 `v<BASE_VER>-<N>-fpk` 标签并递增生成 `<BASE_VER>-<N+1>`（例如上游为 `1.2.8` 时，依次生成 `1.2.8-1`、`1.2.8-2`；上游升至 `1.2.9` 时自动从 `1.2.9-1` 开始）。
+* **校验放行**：`tools/check_tag_version.py` 的正则已扩展为 `^v(\d+\.\d+\.\d+(?:-\d+)?)-fpk$`，确保 GitHub Actions 云端打包与飞牛 `manifest`（自动截取前三位 `1.2.8`）均正常通过。
