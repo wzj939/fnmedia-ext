@@ -18,6 +18,6 @@
 
 ---
 
-## 十、自动递增定制版本号机制（`1.2.8-1`、`1.2.8-2`...）
-* **自动递增规则**：每次运行 `bash /vol1/1000/system/Dockerfile/fnmedia-ext/update_custom.sh` 时，脚本会先将 `VERSION` 对齐上游基底（避免 `git rebase` 冲突），随后自动查询已有 `v<BASE_VER>-<N>-fpk` 标签并递增生成 `<BASE_VER>-<N+1>`（例如上游为 `1.2.8` 时，依次生成 `1.2.8-1`、`1.2.8-2`；上游升至 `1.2.9` 时自动从 `1.2.9-1` 开始）。
-* **校验放行**：`tools/check_tag_version.py` 的正则已扩展为 `^v(\d+\.\d+\.\d+(?:-\d+)?)-fpk$`，确保 GitHub Actions 云端打包与飞牛 `manifest`（自动截取前三位 `1.2.8`）均正常通过。
+## 十、以原项目版本为基准的自动递增版本号机制（`1.2.8-1`、`1.2.9-1`...）
+* **严格对齐上游基线**：每次运行 `bash /vol1/1000/system/Dockerfile/fnmedia-ext/update_custom.sh` 时，脚本直接读取 `upstream/main:VERSION` 作为基准版本号（`UPSTREAM_VER`），查询已存在的 `v<UPSTREAM_VER>-<N>-fpk` 标签并自动递增为 `<UPSTREAM_VER>-<N+1>`（例如上游为 `1.2.8` 时生成 `1.2.8-1`、`1.2.8-2`；上游一旦更新到 `1.2.9`，自动从 `1.2.9-1` 重新递增）。
+* **云端与飞牛兼容性**：`tools/check_tag_version.py` 正则已放行 `^v(\d+\.\d+\.\d+(?:-\d+)?)-fpk$`；飞牛 `build.sh` 会自动截取前三位数字写入应用 `manifest`，同时在 `dist/` 与 GitHub Releases 生成带完整递增版本号的 `.fpk` 安装包。
