@@ -1426,10 +1426,10 @@ async def startup_prewarm_hot() -> None:
                     pass
 
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*[_warm_one(c)
-                                     for c, _t, _ in catalogmod.CATALOG_CATEGORIES]),
-                    timeout=30)
+                await asyncio.sleep(8)
+                for c, _t, _ in catalogmod.CATALOG_CATEGORIES:
+                    await _warm_one(c)
+                    await asyncio.sleep(0.5)
                 _log.info("startup catalog home prewarmed")
             except Exception:
                 _log.info("startup catalog home prewarm partial", exc_info=True)
