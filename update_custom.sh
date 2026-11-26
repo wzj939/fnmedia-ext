@@ -47,5 +47,8 @@ echo "=== 6. 本地编译打包最新全功能完整版 .fpk ==="
 bash packaging/fpk/build.sh
 
 echo "- [$(date "+%Y-%m-%d %H:%M")] 自动同步上游 (${UPSTREAM_VER}) 并打包发布定制版 **${NEW_VER}**" >> PRIVATE_NOTES.md
+cp -r proxy/* /vol1/@appcenter/fnmedia-ext/repo/proxy/
+cp VERSION /vol1/@appcenter/fnmedia-ext/repo/VERSION
+systemctl restart fnmedia-ext
 echo "✅ 全部完成！当前定制版本号: ${NEW_VER}"
 echo "📦 本地安装包: dist/fnmedia-ext-${NEW_VER}.fpk"
