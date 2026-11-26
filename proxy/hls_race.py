@@ -25,6 +25,62 @@ import sourcehealth
 import time
 import urllib.parse
 
+_STREAM_CLIENTS: dict[str, httpx.AsyncClient] = {}
+_STREAM_PROXY_HOSTS: set[str] = set()
+
+def clear_stream_proxy_hosts() -> None:
+    _STREAM_PROXY_HOSTS.clear()
+
+def _get_stream_client(request: Request, url: str = "", force_proxy: bool = False) -> httpx.AsyncClient:
+    from app import config, ext_client  # noqa: E402
+    px = config.stream_proxy()
+    mode = config.stream_proxy_mode()
+    if not px or mode == "off":
+        return ext_client(request)
+    host = urllib.parse.urlsplit(url).netloc.lower() if url else ""
+    if host.endswith((".quark.cn", ".uc.cn")) or host.startswith(("127.0.0.1", "localhost")):
+        return ext_client(request)
+    use_proxy = force_proxy or (mode == "on") or (mode == "auto" and host in _STREAM_PROXY_HOSTS)
+    if not use_proxy:
+        return ext_client(request)
+    cli = _STREAM_CLIENTS.get(px)
+    if cli is None or cli.is_closed:
+        cli = httpx.AsyncClient(
+            proxy=px, verify=False, follow_redirects=True,
+            timeout=httpx.Timeout(connect=10.0, read=90.0, write=30.0, pool=10.0),
+            limits=httpx.Limits(max_connections=64, max_keepalive_connections=20),
+        )
+        _STREAM_CLIENTS[px] = cli
+    return cli
+
+async def _stream_get_retry(request: Request, url: str, headers: dict,
+                            tries: int = 3, timeout: float = 15.0) -> httpx.Response:
+    from app import config
+    px = config.stream_proxy()
+    mode = config.stream_proxy_mode()
+    host = urllib.parse.urlsplit(url).netloc.lower()
+    cli = _get_stream_client(request, url)
+    last_exc = None
+    for attempt in range(max(1, tries)):
+        try:
+            r = await cli.get(url, headers=headers, timeout=timeout, follow_redirects=True)
+            if r.status_code in (403, 502, 503, 504) and px and mode == "auto" and host and host not in _STREAM_PROXY_HOSTS:
+                _STREAM_PROXY_HOSTS.add(host)
+                _log.info("播放流直连返回 %s，自动将 CDN 加入代理列表: %s", r.status_code, host)
+                cli = _get_stream_client(request, url, force_proxy=True)
+                continue
+            return r
+        except Exception as exc:
+            last_exc = exc
+            if px and mode == "auto" and host and host not in _STREAM_PROXY_HOSTS:
+                _STREAM_PROXY_HOSTS.add(host)
+                _log.info("播放流直连异常 (%s)，自动将 CDN 加入代理列表: %s", type(exc).__name__, host)
+                cli = _get_stream_client(request, url, force_proxy=True)
+                continue
+            if attempt + 1 < tries:
+                await asyncio.sleep(0.3 * (attempt + 1))
+    raise last_exc or RuntimeError("stream get failed")
+
 from fnlog import get_logger
 from playback_target import (is_slow_line as target_is_slow_line,
                              mode as playback_mode,
@@ -1434,6 +1490,7 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
     if mm:
         media_seq = int(mm.group(1))
     seg_index = 0
+    _seg_seq: list[str] = []
     out_lines = []
 
     # 先收集所有分片绝对地址（与下方输出顺序一致：URI 标签按出现序，分片行按出现序）
@@ -1489,8 +1546,15 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
                     extra = "&".join(parts)
                 else:
                     extra = sel_qs
-                out_lines.append(_seg_url(mg, urllib.parse.urljoin(cur, line), extra))
+                _abs_seg = urllib.parse.urljoin(cur, line)
+                out_lines.append(_seg_url(mg, _abs_seg, extra))
+                _seg_seq.append(_abs_seg)
             seg_index += 1
+    if len(_seg_seq) > 1:
+        if len(_SEG_NEXT_MAP) > 6000:
+            _SEG_NEXT_MAP.clear()
+        for _idx_s, _u_s in enumerate(_seg_seq):
+            _SEG_NEXT_MAP[_u_s] = _seg_seq[_idx_s + 1 : _idx_s + 11]
     return _inject_hls_start("\n".join(out_lines) + "\n", picked), cur
 
 
@@ -2143,6 +2207,71 @@ def _line_display_name(t: dict) -> str:
     return _friendly_line(line)
 
 
+
+# ---- 服务端切片预读环形缓存（上限 120MB，自动淘汰旧分片） ----
+_SEG_NEXT_MAP: dict[str, list[str]] = {}
+_SEG_DATA_CACHE: dict[str, tuple[bytes, str, float]] = {}
+_SEG_DATA_BYTES = 0
+_SEG_DATA_MAX_BYTES = 120 * 1024 * 1024
+_SEG_DATA_TTL = 180.0
+_SEG_INFLIGHT: set[str] = set()
+_SEG_PREFETCH_SEM = asyncio.Semaphore(3)
+
+
+def _seg_cache_put(url: str, data: bytes, ctype: str) -> None:
+    global _SEG_DATA_BYTES
+    if not data or len(data) > 25 * 1024 * 1024:
+        return
+    now = time.time()
+    old = _SEG_DATA_CACHE.pop(url, None)
+    if old:
+        _SEG_DATA_BYTES -= len(old[0])
+    while _SEG_DATA_BYTES + len(data) > _SEG_DATA_MAX_BYTES and _SEG_DATA_CACHE:
+        k_old = next(iter(_SEG_DATA_CACHE))
+        v_old = _SEG_DATA_CACHE.pop(k_old)
+        _SEG_DATA_BYTES -= len(v_old[0])
+    _SEG_DATA_CACHE[url] = (data, ctype, now)
+    _SEG_DATA_BYTES += len(data)
+
+
+def _seg_cache_get(url: str) -> tuple[bytes, str] | None:
+    global _SEG_DATA_BYTES
+    hit = _SEG_DATA_CACHE.get(url)
+    if not hit:
+        return None
+    if time.time() - hit[2] > _SEG_DATA_TTL:
+        _SEG_DATA_CACHE.pop(url, None)
+        _SEG_DATA_BYTES -= len(hit[0])
+        return None
+    return hit[0], hit[1]
+
+
+async def _prefetch_one_seg(request: Request, url: str, headers: dict) -> None:
+    if url in _SEG_INFLIGHT or _seg_cache_get(url) is not None:
+        return
+    _SEG_INFLIGHT.add(url)
+    try:
+        async with _SEG_PREFETCH_SEM:
+            if _seg_cache_get(url) is not None:
+                return
+            fwd = {k: v for k, v in (headers or {}).items() if k.lower() != "range"}
+            r = await _stream_get_retry(request, url, fwd, tries=2, timeout=20.0)
+            if r.status_code == 200 and r.content:
+                _seg_cache_put(url, r.content, r.headers.get("content-type", "video/mp2t"))
+    except Exception:
+        pass
+    finally:
+        _SEG_INFLIGHT.discard(url)
+
+
+def _schedule_prefetch_next(request: Request, cur_url: str, headers: dict, count: int) -> None:
+    if count <= 0:
+        return
+    nxt_list = _SEG_NEXT_MAP.get(cur_url) or []
+    for u in nxt_list[:count]:
+        if u not in _SEG_INFLIGHT and _seg_cache_get(u) is None:
+            asyncio.create_task(_prefetch_one_seg(request, u, headers))
+
 def _is_media_playlist(text: str) -> bool:
     return "#EXTINF" in text or "#EXT-X-TARGETDURATION" in text
 
@@ -2178,8 +2307,8 @@ async def _fetch_playlist(request: Request, url: str, headers: dict,
         try:
             # 必须传 timeout（网盘线路上面算出的 45s）；写死 15.0 会让
             # 转存耗时 16~19s 的网盘清单被砍掉 → 换线 → 「该线路文件不存在」。
-            r = await ext_get_retry(request, cur, headers, tries=tries,
-                                    timeout=timeout)
+            r = await _stream_get_retry(request, cur, headers, tries=tries,
+                                       timeout=timeout)
         except Exception as exc:
             # 抓取失败即整表失败，调用方据此换线；记异常类型与 URL 形态，不记完整地址。
             _log.warning("playlist fetch failed: error=%s url=%s m3u8=%s",
@@ -2473,8 +2602,8 @@ async def _try_stream_segment(request: Request, src_url: str, fwd: dict,
     重试与坏线记忆）、分片带 PNG 外壳需整段剥壳、上游带 content-encoding
     （raw 流不能直接透传给客户端）。
     """
-    from app import _is_pansou_line_name, _safe_response_headers, ext_client  # noqa: E402,F401 延迟导入：避免与 app.py 循环导入
-    client = ext_client(request)
+    from app import _is_pansou_line_name, _safe_response_headers  # noqa: E402,F401
+    client = _get_stream_client(request, src_url)
     # 连接超时必须短：源站偶尔 TCP 都连不上，等默认 30s 才回退会让播放器干等半分钟。
     # 读超时给宽松值——慢源是"能连上但很慢"，不能因此判死。
     tmo = httpx.Timeout(connect=8.0, read=90.0, write=30.0, pool=10.0)
@@ -2779,20 +2908,36 @@ async def hls_seg(mg: str, request: Request):
                      "X-fnmedia-Seg-Direct": "1"})
     # 起播速度优先：普通分片走流式直通（见 _try_stream_segment）。
     # 加密分片 dec=1 由本服务解密、Range 请求要按字节回传，两者仍走整段缓冲老路径。
-    if request.query_params.get("dec") != "1":
+    from app import config as _cfg_seg
+    _pf_n = _cfg_seg.stream_prefetch_segs()
+    if _pf_n > 0 and "range" not in request.headers and request.query_params.get("dec") != "1":
+        _cached_seg = _seg_cache_get(src_url)
+        if _cached_seg is not None:
+            _schedule_prefetch_next(request, src_url, headers, _pf_n)
+            return Response(
+                _cached_seg[0], status_code=200, media_type=_cached_seg[1],
+                headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*", "X-Fnmedia-Seg-Cache": "HIT"})
+    _use_nas_px = bool(_cfg_seg.stream_proxy()) and (
+        _cfg_seg.stream_proxy_mode() == "on"
+        or (_cfg_seg.stream_proxy_mode() == "auto" and urllib.parse.urlsplit(src_url).netloc.lower() in _STREAM_PROXY_HOSTS)
+    )
+    if request.query_params.get("dec") != "1" and not _use_nas_px and _pf_n <= 0:
         _streamed = await _try_stream_segment(request, src_url, fwd, picked)
         if _streamed is not None:
             return _streamed
     _seg_t0 = time.time()
     try:
         # 分片在播放中途持续拉取，对瞬时抖动必须重试，否则单次失败播放器直接报错
-        r = await ext_get_retry(request, src_url, fwd, tries=4, timeout=30.0)
+        r = await _stream_get_retry(request, src_url, fwd, tries=4, timeout=30.0)
     except Exception as exc:
         _log.warning("seg fetch fail %s %s", type(exc).__name__,
                      urllib.parse.urlsplit(src_url).netloc)
         return _err_response(f"seg fail {type(exc).__name__}", 502,
                              "seg_fail")
     body = r.content
+    if _pf_n > 0 and r.status_code == 200 and body and "range" not in request.headers and request.query_params.get("dec") != "1":
+        _seg_cache_put(src_url, body, r.headers.get("content-type", "video/mp2t"))
+        _schedule_prefetch_next(request, src_url, headers, _pf_n)
     # 播放中分片耗时（供静默换线决策）：整段缓冲回退路径同样记录完整下载耗时。
     # （抄上游 v1.1.0 app.py:7404：PanSou 手动线不计入线路测速统计。）
     try:

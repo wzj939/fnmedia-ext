@@ -436,6 +436,17 @@ async def _fetch_category_page(client: httpx.AsyncClient, source: dict,
 
 
 class Catalog:
+
+    _FG_UNTIL: float = 0.0
+    _BOOST_MAP: dict[str, float] = {}
+
+    def notify_foreground_activity(self, hold_sec: float = 5.0) -> None:
+        Catalog._FG_UNTIL = max(Catalog._FG_UNTIL, time.time() + hold_sec)
+
+    def boost_scope(self, scope: str, ttl: float = 60.0) -> None:
+        if scope:
+            Catalog._BOOST_MAP[scope] = time.time() + ttl
+
     def __init__(self):
         self._lock = threading.RLock()
         # source_id -> [ {type_id, type_name, type_pid, cat} ]
@@ -541,12 +552,38 @@ class Catalog:
         return task
 
     def standalone_scopes(self) -> list[str]:
-        """当前需要独立成库的源 id（来源配置中的 standalone 标记）。"""
+        """当前需要独立成库的 scope 列表（单源 id 或 group:<库名>）。"""
         try:
             from config import config
-            return [s["id"] for s in config.all_sources() if s.get("standalone")]
+            out: list[str] = []
+            seen_g: set[str] = set()
+            for s in config.all_sources():
+                if not s.get("standalone"):
+                    continue
+                grp = str(s.get("lib_group") or "").strip()
+                if grp:
+                    gscope = f"group:{grp}"
+                    if gscope not in seen_g:
+                        seen_g.add(gscope)
+                        out.append(gscope)
+                else:
+                    out.append(s["id"])
+            return out
         except Exception:
             _log.debug("standalone_scopes failed", exc_info=True)
+            return []
+
+    def _group_member_ids(self, scope: str) -> list[str]:
+        # 限制单组最多并发前 6 个启用源，防止多源同时解析打满 CPU
+        if not scope.startswith("group:"):
+            return []
+        grp = scope[6:]
+        try:
+            from config import config
+            return [s["id"] for s in config.enabled_sources()
+                    if s.get("standalone") and str(s.get("lib_group") or "").strip() == grp][:6]
+        except Exception:
+            _log.debug("_group_member_ids failed", exc_info=True)
             return []
 
     # -------------------------------------------------- 分类表 / 路由
@@ -779,12 +816,31 @@ class Catalog:
                 out: dict[str, list[dict]] = {}
                 # 福利分类由 welfare_library_enabled 独立开关控制：
                 # 开关开 → 聚合与单源独立库都纳入 ADULT 池；开关关 → 一律不建。
-                cats = list(dict.fromkeys(CATS + (list(WELFARE_CATS) if _welfare_on() else [])))
+                _scope_adult = _welfare_on()
+                if not _scope_adult and scope != AGG_SCOPE:
+                    if scope.startswith("group:"):
+                        _scope_adult = any(self._source_by_id(m) and self._source_by_id(m).get("adult")
+                                           for m in self._group_member_ids(scope))
+                    else:
+                        _s0 = self._source_by_id(scope)
+                        _scope_adult = bool(_s0 and _s0.get("adult"))
+                cats = list(dict.fromkeys(CATS + (list(WELFARE_CATS) if _scope_adult else [])))
                 for cat in cats:
                     if scope == AGG_SCOPE:
                         rs = [probed[(cat, sid)] for (c2, sid) in probed if c2 == cat]
                         rs.sort(key=lambda r: -(r.get("pagecount") or 0))
                         # 聚合：首选最深的源，并附带其余可深翻源做回退
+                        out[cat] = rs
+                    elif scope.startswith("group:"):
+                        mids = set(self._group_member_ids(scope))
+                        rs = [probed[(cat, sid)] for (c2, sid) in probed if c2 == cat and sid in mids]
+                        for msid in mids:
+                            if not any(r.get("source_id") == msid for r in rs):
+                                for cl in self._classes.get(msid, []):
+                                    if cl.get("cat") == cat:
+                                        rs.append({"source_id": msid, "type_id": cl["type_id"], "type_name": cl["type_name"], "pagecount": MAX_PAGES})
+                                        break
+                        rs.sort(key=lambda r: -(r.get("pagecount") or 0))
                         out[cat] = rs
                     else:
                         # 单源独立库：不依赖建库探测是否成功——直接纳入该类下
@@ -1349,9 +1405,13 @@ class Catalog:
                     async def bound(r):
                         async with sem:
                             return await fetch_one(client, r, timeout)
-                    results = await asyncio.gather(
-                        *[bound(r) for r in routes],
-                        return_exceptions=True)
+                    try:
+                        results = await asyncio.wait_for(
+                            asyncio.gather(*[bound(r) for r in routes], return_exceptions=True),
+                            timeout=min(float(timeout), 8.5)
+                        )
+                    except asyncio.TimeoutError:
+                        results = []
                 if generation != self._cache_generation:
                     return []
                 merged: list[dict] = []
@@ -1393,8 +1453,9 @@ class Catalog:
     async def warm_standalone(self, scope: str):
         """建库后后台预热独立库各分类首页，缓解慢源首屏空白。"""
         try:
+            await _yield_to_foreground()
             src = self._source_by_id(scope)
-            pool = list(dict.fromkeys(CATS + list(WELFARE_CATS))) if (_welfare_on() and src and src.get("adult")) else CATS
+            pool = list(dict.fromkeys(CATS + list(WELFARE_CATS))) if (src and src.get("adult")) else CATS
             await asyncio.gather(
                 *[self.get_page(c, 1, scope) for c in pool
                   if self.available(c, scope)],
@@ -1454,8 +1515,14 @@ class Catalog:
         请求超出已缓存 merged 长度时按新 end 重建一次并更新缓存。
         合并顺序/去重逻辑与旧版完全一致，只是不重复算。
         """
-        src = self._source_by_id(scope)
-        pool = list(dict.fromkeys(CATS + list(WELFARE_CATS))) if (_welfare_on() and src and src.get("adult")) else CATS
+        if scope.startswith("group:"):
+            from config import config as _cfg
+            mids = self._group_member_ids(scope)
+            is_adult = any(s.get("adult") for s in _cfg.enabled_sources() if s["id"] in mids)
+            pool = list(dict.fromkeys(CATS + list(WELFARE_CATS))) if is_adult else CATS
+        else:
+            src = self._source_by_id(scope)
+            pool = list(dict.fromkeys(CATS + list(WELFARE_CATS))) if (src and src.get("adult")) else CATS
         cats = [c for c in pool if self.available(c, scope)]
         if not cats:
             return [], 0
@@ -1525,7 +1592,7 @@ class Catalog:
 
     def standalone_available(self, scope: str) -> bool:
         src = self._source_by_id(scope)
-        pool = list(dict.fromkeys(CATS + list(WELFARE_CATS))) if (_welfare_on() and src and src.get("adult")) else CATS
+        pool = list(dict.fromkeys(CATS + list(WELFARE_CATS))) if (src and src.get("adult")) else CATS
         return any(self.available(c, scope) for c in pool)
 
 

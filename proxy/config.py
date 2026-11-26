@@ -352,6 +352,9 @@ DEFAULTS = {
     # 检查/下载插件更新安装包时可选的 HTTP(S) 代理（仅更新用途）。
     # 留空则回退 subscription_proxy，再不行直连。仅存于本机 state，不随包分发。
     "update_proxy": "",
+    "stream_proxy": "",
+    "stream_proxy_mode": "off",
+    "stream_prefetch_segs": 0,
     # —— 网盘过期转存清理（P1-8，与上游调用点默认值一致）——
     # 默认开启：转存只是可随时重新生成的缓存副本，过期不清理会无限占用
     # 用户网盘空间；TTL 6h：覆盖一次正常观影（点播时实时换链，清理只删
@@ -792,6 +795,18 @@ class Config:
             self._persist(cfg)
             return True, sid
 
+    def set_source_group(self, sid: str, lib_group: str = "", adult: bool = False) -> None:
+        with _LOCK:
+            cfg = self._copy_current()
+            for s in cfg["sources"]:
+                if s.get("id") == sid:
+                    if lib_group:
+                        s["lib_group"] = str(lib_group).strip()[:40]
+                    if adult:
+                        s["adult"] = True
+                    self._persist(cfg)
+                    return
+
     # 移植上游 v0.2.69（CMS 源导入/导出：/v/api/ext/source/update 的后端）。
     def update_source(self, sid: str, name: str | None = None,
                       api: str | None = None) -> tuple[bool, str]:
@@ -925,6 +940,59 @@ class Config:
             _log.debug("source_proxy_mode failed", exc_info=True)
             return "auto"
 
+    def set_stream_proxy(self, proxy_url: str) -> tuple[bool, str]:
+        from urllib.parse import urlparse
+        p = (proxy_url or "").strip()
+        if p:
+            u = urlparse(p)
+            if u.scheme not in ("http", "https", "socks5", "socks5h") or not u.hostname:
+                return False, "代理地址格式应为 http://user:pass@host:port"
+        with _LOCK:
+            cfg = self._copy_current()
+            cfg["stream_proxy"] = p
+            self._persist(cfg)
+            return True, "ok"
+
+    def set_stream_proxy_mode(self, mode: str) -> tuple[bool, str]:
+        m = str(mode or "off").strip().lower()
+        if m not in ("off", "on", "auto"):
+            return False, "模式须为 off/on/auto"
+        with _LOCK:
+            cfg = self._copy_current()
+            cfg["stream_proxy_mode"] = m
+            self._persist(cfg)
+            return True, "ok"
+
+    def stream_proxy(self) -> str:
+        try:
+            return str(self.get().get("stream_proxy") or "").strip()
+        except Exception:
+            return ""
+
+    def stream_proxy_mode(self) -> str:
+        try:
+            m = str(self.get().get("stream_proxy_mode") or "off").strip().lower()
+            return m if m in ("off", "on", "auto") else "off"
+        except Exception:
+            return "off"
+
+    def set_stream_prefetch_segs(self, n) -> tuple[bool, str]:
+        try:
+            val = max(0, min(15, int(n)))
+        except (TypeError, ValueError):
+            val = 0
+        with _LOCK:
+            cfg = self._copy_current()
+            cfg["stream_prefetch_segs"] = val
+            self._persist(cfg)
+            return True, "ok"
+
+    def stream_prefetch_segs(self) -> int:
+        try:
+            return max(0, min(15, int(self.get().get("stream_prefetch_segs") or 0)))
+        except Exception:
+            return 0
+
     def main_ready_budget(self) -> float:
         """慢线起播预算（秒）：每次实时读配置并夹取 [0.8, 2.8]，非法值回落 2.4。
 
@@ -984,7 +1052,6 @@ class Config:
             self._persist(cfg)
             return True, "ok"
 
-    # >>> PRIVATE:ADULT
     def set_adult(self, sid: str, on: bool) -> tuple[bool, str]:
         """允许该源独立库收录合规成年分类；硬红线（涉未成年/非自愿）不受影响。"""
         if not features.ADULT:
@@ -997,7 +1064,6 @@ class Config:
             target["adult"] = bool(on)
             self._persist(cfg)
             return True, "ok"
-    # <<< PRIVATE:ADULT
 
     def set_source_enabled(self, sid: str, enabled: bool) -> bool:
         """只改一个源的启用位（不动其它字段）。

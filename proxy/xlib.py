@@ -726,7 +726,7 @@ class XiaoyaLibrary:
         读取已落盘索引即可。需要更新索引时必须由用户在管理入口【手动刷新】，
         显式调用 start_manual_build()。可用环境变量 FNMEDIA_XLIB_AUTOBUILD=1
         临时恢复旧的“点进分类即增量建库”。"""
-        if not os.environ.get("FNMEDIA_XLIB_AUTOBUILD"):
+        if os.environ.get("FNMEDIA_XLIB_AUTOBUILD") == "0":
             if cat_id in self._idx:
                 self._idx[cat_id].load()
             return
