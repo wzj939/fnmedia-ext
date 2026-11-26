@@ -251,7 +251,7 @@ async def _probe_latency(cand: dict, request: Request,
         # 网盘转存后是本服务根相对地址（/v/api/ext/pan/play?fid=…），经回环自调用
         url = _self_url(raw_url)
         headers = cand.get("headers") or {"User-Agent": "Mozilla/5.0"}
-        cli = ext_client(request)
+        cli = _get_stream_client(request, url)
 
         # 非 HLS（网盘 /d 直链、mp4 等）：Range GET 探测
         is_m3u8 = bool(cand.get("m3u8")) or bool(
@@ -416,7 +416,7 @@ async def _verify_rewritten_first_seg(body: str, request: Request,
             pass
         # <<< PRIVATE:PAN
         headers["Range"] = _PROBE_RANGE
-        cli = ext_client(request)
+        cli = _get_stream_client(request, real)
         req = cli.build_request("GET", real, headers=headers)
         r = await cli.send(req, follow_redirects=True)
         try:
@@ -1095,7 +1095,7 @@ async def _resolve_if_needed(picked: dict, request: Request) -> dict:
     # <<< PRIVATE:DDUO
     if playback_mode(picked) == "redirect":
         real = await providers.resolve_redirect(
-            ext_client(request), picked["url"],
+            _get_stream_client(request, picked["url"]), picked["url"],
             (picked.get("headers") or {}).get("Referer", ""))
         if real:
             picked["url"] = real
@@ -1115,7 +1115,7 @@ async def _resolve_if_needed(picked: dict, request: Request) -> dict:
         # <<< PRIVATE:PAN
         if not _pan_done:
             real = await providers.resolve_share(
-                ext_client(request), picked["url"],
+                _get_stream_client(request, picked["url"]), picked["url"],
                 (picked.get("headers") or {}).get("Referer", ""))
             if real:
                 picked["url"] = real
@@ -1284,8 +1284,7 @@ async def _probe_direct_media(request, url: str, headers: dict) -> bool:
     返回 False，按原逻辑继续（仍可能取到无后缀清单），绝不卡死。
     """
     try:
-        from app import ext_client  # noqa: E402 延迟导入：避免与 app.py 循环导入
-        client = ext_client(request)
+        client = _get_stream_client(request, url)
         probe_headers = dict(headers or {})
         probe_headers["Range"] = "bytes=0-0"
         req = client.build_request("GET", url, headers=probe_headers,
@@ -1432,7 +1431,7 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
                     break
         if jump:
             fresh = await providers.resolve_redirect(
-                ext_client(request), jump, (headers or {}).get("Referer", ""))
+                _get_stream_client(request, jump), jump, (headers or {}).get("Referer", ""))
             if fresh:
                 text, cur = await _fetch_playlist(request, fresh, headers,
                                                   picked=picked)
@@ -1478,7 +1477,7 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
         try:
             import quality as _quality
             parsed = await _quality._parse_hls_key(
-                ext_client(request), text, cur, headers)
+                _get_stream_client(request, cur), text, cur, headers)
             if parsed:
                 decrypt_key, explicit_iv = parsed
         except Exception as exc:
@@ -3032,7 +3031,7 @@ async def hls_compact(mg: str, request: Request):
     if request.headers.get("range"):
         fwd["Range"] = request.headers["range"]
     try:
-        r = await ext_get_retry(request, src_url, fwd, tries=4, timeout=30.0)
+        r = await _stream_get_retry(request, src_url, fwd, tries=4, timeout=30.0)
     except Exception as exc:  # noqa: BLE001
         _log.warning("hls compact seg fail %s", type(exc).__name__)
         return Response("seg fail", status_code=502)
