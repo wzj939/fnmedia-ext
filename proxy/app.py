@@ -171,7 +171,7 @@ ONLINE_PREFIX = "/v/media/online"
 # 榜单/热门卡片是虚拟 guid，点开时才拿片名去聚合搜源。原版详情只等 0.12s 就返回
 # 骨架（表现为大小 0、路径=在线/加载中.m3u8），而播放侧又无超时地等同一个任务，
 # 于是首次点播一直转圈。这里把两个等待窗做成可配：
-_CHART_DETAIL_WAIT = float(os.environ.get("FNMEDIA_CHART_DETAIL_WAIT", "2.5"))
+_CHART_DETAIL_WAIT = float(os.environ.get("FNMEDIA_CHART_DETAIL_WAIT", "5.5"))
 # T4 detail must never hold the TV/App detail spinner indefinitely.
 _T4_DETAIL_WAIT = float(os.environ.get("FNMEDIA_T4_DETAIL_WAIT", "12"))
 _CHART_PLAY_WAIT = float(os.environ.get("FNMEDIA_CHART_PLAY_WAIT", "12"))
@@ -4415,8 +4415,18 @@ async def item_detail(guid: str, request: Request):
         # 0.9~5s，而安卓要等详情返回才渲染页面，用户会先看到整页“无数据”。
         # 详情秒回渲染页面骨架，真正的线路数据由并发的 item/list 在等待窗口内等出。
         _folder_og = _parse_line_folder_guid(guid)
-        if _folder_og and not store.get_title_by_guid(_folder_og):
-            prefetch_folder_binding(_folder_og)
+        if _folder_og:
+            _fb_cur = store.get_title_by_guid(_folder_og)
+            if not _fb_cur or not (_fb_cur.get("lines") or {}):
+                try:
+                    _ffut = _start_folder_bind(_folder_og)
+                    if _ffut is not None:
+                        await asyncio.wait_for(asyncio.shield(_ffut), timeout=4.5)
+                except Exception:
+                    pass
+                _fb_after = store.get_title_by_guid(_folder_og)
+                if _fb_after and _fb_after.get("title"):
+                    _schedule_folder_full_fallback(_folder_og, _fb_after["title"], str(_fb_after.get("year") or ""))
         folder_detail = _vod_folder_detail(guid, _client_of(request))
         if folder_detail is not None:
             return folder_detail
@@ -4531,8 +4541,10 @@ async def item_detail(guid: str, request: Request):
     if chart_cache.is_chart_guid(guid):
         meta = chart_cache.get_guid(guid) or {}
         bound = store.get_title_by_guid(guid)
-        if bound is None and not (_monotonic() - _CHART_FAILED_TS.get(guid, 0)
-                                  < _CHART_FAILED_TTL):
+        if bound is None:
+            # 用户主动点入详情页：强制清除历史失败冷却黑名单，立即最高优先级插队全网搜源
+            _CHART_FAILED_TS.pop(guid, None)
+        if bound is None:
             # 详情接口也不能把用户卡在海报墙：后台搜源 + 极短窗口，超时先返回
             # 可播骨架（play/info/stream/preset 会在播放页内继续等待同一任务）。
             fut = start_resolve_chart(guid)
@@ -4674,6 +4686,17 @@ async def item_detail(guid: str, request: Request):
         return await forward_upstream(request)
     if not _brief_viewable(request, brief):
         return JSONResponse({"code": -6, "msg": "此媒体库不存在", "data": None})
+    if not (brief.get("lines") or {}) and brief.get("title"):
+        try:
+            _b_res = await asyncio.wait_for(_aggregate_briefs(brief["title"], 12), timeout=5.5)
+            _b_pick = _pick_folder_brief(brief["title"], str(brief.get("year") or ""), _b_res)
+            if _b_pick and (_b_pick.get("lines") or {}):
+                _merged = dict(brief)
+                _merged["lines"] = _b_pick["lines"]
+                store.remember_merged([_merged])
+                brief = store.get_title_by_guid(guid) or _merged
+        except Exception:
+            _log.debug("detail empty-lines on-demand resolve skipped", exc_info=True)
     data = inj.detail_item(brief)
     # TMDB is detail-only and bounded; search/catalog/playback never wait on it.
     if config.read("tmdb_enabled", False):
