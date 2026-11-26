@@ -1392,6 +1392,9 @@ def schedule_prewarm_title(og: str, index: int = 0) -> None:
 
 
 async def startup_prewarm_hot() -> None:
+    if os.environ.get("FNMEDIA_ROLE") == "frontend":
+        _log.info("frontend 极速模式：启动重型预热已交由独立低优先级 bg_worker 执行")
+        return
     """重启后的轻量启动任务（移植上游 B18-prewarm）。
 
     历史教训：全量后台预热（逐片 resolve / 无界翻页拉取）会长期抢占事件循环与
@@ -1463,6 +1466,18 @@ async def startup_prewarm_hot() -> None:
 
 async def _hot_worker(app: FastAPI):
     """榜单 + 海量库路由后台刷新。启动先读旧缓存，稍等再刷新；之后按配置轮询。"""
+    if os.environ.get("FNMEDIA_ROLE") == "frontend":
+        while not app.state.stop_hot.is_set():
+            try:
+                if hasattr(chart_cache, "reload"):
+                    chart_cache.reload()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(app.state.stop_hot.wait(), timeout=20)
+            except asyncio.TimeoutError:
+                pass
+        return
     await asyncio.sleep(4)
     while not app.state.stop_hot.is_set():
         cfg = config.get()
