@@ -101,7 +101,7 @@ jobs:
             TAG="v$(head -n1 VERSION | tr -d '[:space:]')-fpk"
           fi
           gh release create "$TAG" dist/* \
-            --title "fnmedia-ext ${TAG#v}" --generate-notes \
+            --title "fnmedia-ext ${TAG#v}" --notes-file CUSTOMIZATION.md \
             || gh release upload "$TAG" dist/* --clobber
 
   public:
@@ -167,5 +167,5 @@ jobs:
             TAG="v$(head -n1 VERSION | tr -d '[:space:]')-fpk"
           fi
           gh release create "$TAG" dist/* \
-            --title "fnmedia-ext ${TAG#v}" --generate-notes \
+            --title "fnmedia-ext ${TAG#v}" --notes-file CUSTOMIZATION.md \
             || gh release upload "$TAG" dist/* --clobber
