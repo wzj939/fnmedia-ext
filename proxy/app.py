@@ -4386,7 +4386,7 @@ async def t4_range(mg: str, request: Request):
             raise t4.T4Error("当前飞牛适配尚未验证 DASH/双轨播放")
     except t4.T4Error as exc:
         return Response(str(exc), status_code=502)
-    response = await t4_media.deliver(ext_client(request), result.url, result, request)
+    response = await t4_media.deliver(hls_race._get_stream_client(request, result.url), result.url, result, request)
     if response.status_code >= 400:
         t4_service.invalidate_playback(target)
     return response
@@ -4394,7 +4394,7 @@ async def t4_range(mg: str, request: Request):
 
 @app.api_route("/v/media/t4-resource/{token}", methods=["GET", "HEAD"])
 async def t4_resource(token: str, request: Request):
-    return await t4_media.resource_response(ext_client(request), token, request)
+    return await t4_media.resource_response(hls_race._get_stream_client(request), token, request)
 
 
 @app.get("/v/api/v1/item/{guid}")
@@ -6316,8 +6316,9 @@ async def direct_proxy(mg: str, request: Request):
     if request.headers.get("range"):
         fwd["Range"] = request.headers["range"]
     try:
-        req = ext_client(request).build_request("GET", src_url, headers=fwd)
-        r = await ext_client(request).send(req, stream=True)
+        _scli = hls_race._get_stream_client(request, src_url)
+        req = _scli.build_request("GET", src_url, headers=fwd)
+        r = await _scli.send(req, stream=True)
     except Exception as exc:
         # 直链连接失败：记忆坏线并自动换线重试一次
         if _autofail_on():
@@ -6339,9 +6340,10 @@ async def direct_proxy(mg: str, request: Request):
                 if request.headers.get("range"):
                     fwd["Range"] = request.headers["range"]
                 try:
-                    req = ext_client(request).build_request(
+                    _scli2 = hls_race._get_stream_client(request, target["url"])
+                    req = _scli2.build_request(
                         "GET", target["url"], headers=fwd)
-                    r = await ext_client(request).send(req, stream=True)
+                    r = await _scli2.send(req, stream=True)
                 except Exception as exc2:
                     _log.debug("direct_proxy failed", exc_info=True)
                     return _direct_to_placeholder(mg, request)
