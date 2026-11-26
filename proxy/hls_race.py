@@ -1391,12 +1391,6 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
     # 解析规则可能在部分源侧刷新 Referer/Cookie/User-Agent；必须读取更新后的 headers。
     headers = dict(picked.get("headers") or {})
     src_url = _self_url(picked["url"])
-    # fnOS直连模式：不拉取/改写 m3u8、不中转任何 ts 切片，直接交由调用方 302 移交客户端/网页端播放器直连
-    from app import config as _cfg_hls
-    if _cfg_hls.stream_proxy_mode() == "fnos" and src_url.startswith(("http://", "https://")) and "/v/api/ext/pan/" not in src_url:
-        _h_host = urllib.parse.urlsplit(src_url).netloc.lower()
-        if not _h_host.startswith(("127.0.0.1", "localhost")):
-            return _NOT_HLS, None
     # 解析后若发现其实是 mp4 直链（wrapper 预判为 HLS 时的兜底），交由调用方 302
     if not re.search(r"\.m3u8(\?|$)", src_url, re.I) \
             and re.search(r"\.mp4(\?|$)", src_url, re.I):
@@ -1519,21 +1513,32 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
             (media_seq + seg_index).to_bytes(16, "big"))
         return f"dec=1&k={b64e(decrypt_key.hex())}&iv={b64e(iv.hex())}"
 
+    from app import config as _cfg_luna
+    _is_fnos_direct = (_cfg_luna.stream_proxy_mode() == "fnos" and "/v/api/ext/pan/" not in cur)
     compact_i = 0
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("#EXT-X-KEY") and decrypt_key is not None:
-            # 服务端已解密：客户端无需也不能再拿到密钥标签
+            if _is_fnos_direct:
+                # LunaTV 架构：客户端直连分片时，将已下载的 AES-128 密钥内嵌为 Base64 Data URI，客户端原生硬件解密
+                import base64 as _b64
+                _k_b64 = _b64.b64encode(decrypt_key).decode("ascii")
+                _iv_part = f",IV=0x{explicit_iv.hex()}" if explicit_iv is not None else ""
+                out_lines.append(f'#EXT-X-KEY:METHOD=AES-128,URI="data:application/octet-stream;base64,{_k_b64}"{_iv_part}')
+            # NAS 中转模式：服务端已解密，客户端无需再拿密钥标签
             continue
         if line.startswith("#EXT-X-MAP") or \
                 (line.startswith("#EXT-X-KEY") and 'URI="' in line):
             def repl(m):
                 nonlocal compact_i
                 uri = m.group(1)
+                abs_u = urllib.parse.urljoin(cur, uri)
+                if _is_fnos_direct and abs_u.startswith(("http://", "https://")):
+                    return f'URI="{abs_u}"'
                 if compact_rid:
                     ref = f"hls?r={compact_rid}&i={compact_i}"
                 else:
-                    ref = _seg_url(mg, urllib.parse.urljoin(cur, uri), sel_qs)
+                    ref = _seg_url(mg, abs_u, sel_qs)
                 compact_i += 1
                 return f'URI="{ref}"'
             raw = re.sub(r'URI="([^"]+)"', repl, line, flags=re.I)
@@ -1541,7 +1546,11 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
         elif line.startswith("#") or not line:
             out_lines.append(raw)
         else:
-            if compact_rid:
+            _abs_seg = urllib.parse.urljoin(cur, line)
+            if _is_fnos_direct and _abs_seg.startswith(("http://", "https://")):
+                # LunaTV 架构核心：分片直接输出源站 CDN 绝对 URL，客户端直连拉流，扩展 0 流量转发
+                out_lines.append(_abs_seg)
+            elif compact_rid:
                 out_lines.append(
                     f"hls?r={compact_rid}&i={compact_i}")
                 compact_i += 1
@@ -1551,7 +1560,6 @@ async def _build_playlist_body(mg: str, picked: dict, request: Request):
                     extra = "&".join(parts)
                 else:
                     extra = sel_qs
-                _abs_seg = urllib.parse.urljoin(cur, line)
                 out_lines.append(_seg_url(mg, _abs_seg, extra))
                 _seg_seq.append(_abs_seg)
             seg_index += 1

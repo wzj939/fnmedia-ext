@@ -6328,9 +6328,6 @@ async def direct_proxy(mg: str, request: Request):
                                     "index": target.get("index", 0)})
         return RedirectResponse(f"{ONLINE_PREFIX}/{mg}/preset.m3u8?{q}",
                                 status_code=302)
-    if _client_direct_only(target):
-        return RedirectResponse(src_url, status_code=302,
-                                headers={"Cache-Control": "no-store"})
     # 网盘原画直出 mp4：src 是本服务根相对地址，经回环自调用（注入网盘 Cookie）
     src_url = _self_url(src_url)
     fwd = dict(target.get("headers") or {})
@@ -6958,19 +6955,8 @@ def _pick_episode(mg: str, request: Request) -> dict | None:
 
 
 def _client_direct_only(t: dict) -> bool:
-    """该已解析目标必须让客户端直连 302（网盘 /d 直链或开启 fnOS 直连模式），不能走本代理抓流。"""
-    if bool(t.get("client_direct")):
-        return True
-    try:
-        if config.stream_proxy_mode() == "fnos":
-            u = str(t.get("url") or "").strip()
-            if u.startswith(("http://", "https://")) and "/v/api/ext/pan/" not in u:
-                host = urllib.parse.urlsplit(u).netloc.lower()
-                if not host.startswith(("127.0.0.1", "localhost")):
-                    return True
-    except Exception:
-        pass
-    return False
+    """该已解析目标必须让客户端直连 302（网盘 /d 直链等），不能走本代理抓流。"""
+    return bool(t.get("client_direct"))
 
 
 def _dodge_known_bad(picked: dict, request: Request) -> dict:
