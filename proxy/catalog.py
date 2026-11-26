@@ -368,6 +368,10 @@ def classify_source_class(name: str, adult_allowed: bool) -> str | None:
     n = (name or "").strip()
     if not n or is_redline(n) or n in _BAN_CATEGORIES:
         return None
+    # 硬隔离铁律：限制级源站 (adult_allowed=True) 的所有子目录严禁走常规 classify(n)，
+    # 全部锁死在 ADULT_CAT 独立库内，彻底杜绝「卡通动漫/伦理片/直播大秀」串进公共海量库。
+    if adult_allowed:
+        return ADULT_CAT
     # 成人向优先（第 5 批）：classify() 的“以‘片’结尾 ≤4 字 → movie”规则会
     # 把“伦理片”判进电影库、“短剧”规则会把“擦边短剧”判进短剧库，导致
     # _ADULT_KW 的第二段永远看不到它们。福利开关开时先认成人词，再走
