@@ -4411,7 +4411,7 @@ async def t4_range(mg: str, request: Request):
             raise t4.T4Error("当前飞牛适配尚未验证 DASH/双轨播放")
     except t4.T4Error as exc:
         return Response(str(exc), status_code=502)
-    response = await t4_media.deliver(hls_race._get_stream_client(request, result.url), result.url, result, request)
+    import hls_race as _hr_t4; response = await t4_media.deliver(_hr_t4._get_stream_client(request, result.url), result.url, result, request)
     if response.status_code >= 400:
         t4_service.invalidate_playback(target)
     return response
@@ -4419,7 +4419,7 @@ async def t4_range(mg: str, request: Request):
 
 @app.api_route("/v/media/t4-resource/{token}", methods=["GET", "HEAD"])
 async def t4_resource(token: str, request: Request):
-    return await t4_media.resource_response(hls_race._get_stream_client(request), token, request)
+    import hls_race as _hr_t4; return await t4_media.resource_response(_hr_t4._get_stream_client(request), token, request)
 
 
 @app.get("/v/api/v1/item/{guid}")
