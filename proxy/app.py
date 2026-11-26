@@ -6550,11 +6550,30 @@ async def play_record_delete(request: Request):
     except Exception:
         _log.debug("play_record_delete failed", exc_info=True)
         ids = []
-    ids = [_normalize_history_guid(g) for g in ids
-           if g and (store.get_title_by_guid(_normalize_history_guid(g))
-                     or store.get_episode(_normalize_history_guid(g)))]
-    if ids:
-        history.delete(ids)
+    for qk in ("item_guid", "guid", "id", "ids"):
+        qv = request.query_params.get(qk)
+        if qv:
+            ids.extend([x.strip() for x in qv.split(",") if x.strip()])
+    raw_ids = [g for g in ids if isinstance(g, str) and g]
+    norm_ids = [_normalize_history_guid(g) for g in raw_ids]
+    all_del = list(dict.fromkeys(raw_ids + norm_ids))
+    extra = []
+    for g in list(all_del):
+        rec = history.get(g)
+        if isinstance(rec, dict):
+            sg = rec.get("series_guid") or rec.get("title_guid")
+            if sg:
+                extra.append(sg)
+    all_del = list(dict.fromkeys(all_del + extra))
+    is_online = any(
+        history.get(g) is not None
+        or store.get_title_by_guid(g) is not None
+        or store.get_episode(g) is not None
+        or g.startswith(("on_", "fnmedia-", "chart:", "t4:", "xlib:"))
+        for g in all_del
+    )
+    if all_del and is_online:
+        history.delete(all_del)
         return JSONResponse({"code": 0, "msg": "", "data": True})
     return await forward_upstream(request)
 

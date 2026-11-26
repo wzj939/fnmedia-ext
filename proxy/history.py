@@ -818,6 +818,7 @@ class History:
         with _LOCK:
             u = current_user() if user is None else str(user or "")
             bucket = self._bucket(u)
+            id_set = {str(x) for x in ids if x}
             for g in ids:
                 removed = False
                 if g in bucket:
@@ -827,6 +828,12 @@ class History:
                 if ck and ck != g and ck in bucket:
                     del bucket[ck]
                     removed = True
+                for bk, bv in list(bucket.items()):
+                    if isinstance(bv, dict):
+                        snap_g = (bv.get("snapshot") or {}).get("guid") if isinstance(bv.get("snapshot"), dict) else None
+                        if any(x in id_set for x in (bv.get("item_guid"), bv.get("media_guid"), bv.get("video_guid"), snap_g) if x):
+                            del bucket[bk]
+                            removed = True
                 if removed:
                     n += 1
             if n:
