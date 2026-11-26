@@ -1407,33 +1407,25 @@ async def startup_prewarm_hot() -> None:
     本任务是一次性启动预热，两者首轮重叠时后者命中内存/dense 缓存，开销有限。
     """
     try:
-        await asyncio.sleep(8)
+        await asyncio.sleep(1)
         if not bool(config.read("linepredict_enabled",True)):
             return
         try:
             if catalog.routes_stale():
                 await asyncio.wait_for(
                     catalog.refresh_routes(config.enabled_sources()), timeout=90)
-                _log.info("startup catalog routes refreshed (on-demand mode)")
-            # 预热海量库各分类首页到 dense 缓存：TV/盒子/安卓启动会并发拉取多个媒体库，
-            # 未预热时每个 catalog 首页（客户端首屏 page_size=72，约 4 个 CMS 分页）都要
-            # 现场跨源深翻（实测 0.9~3.9s），与二级目录冷片搜索争抢事件循环/连接池，把
-            # folder 搜索从亚秒拖到 1.5s+ 触发安卓占位。预热 80 条覆盖首屏，库根命中内存。
+                _log.info("startup catalog routes refreshed (aggressive mode)")
             async def _warm_one(cat):
                 try:
                     if catalog.available(cat):
-                        await catalog.get_window(cat, 0, 80)
+                        await catalog.get_window(cat, 0, 160)
                 except Exception:
                     _log.debug("startup prewarm warm_one failed: cat=%s",
                                cat, exc_info=True)
-                    pass
 
             try:
-                await asyncio.sleep(8)
-                for c, _t, _ in catalogmod.CATALOG_CATEGORIES:
-                    await _warm_one(c)
-                    await asyncio.sleep(0.5)
-                _log.info("startup catalog home prewarmed")
+                await asyncio.gather(*[_warm_one(c) for c, _t, _ in catalogmod.CATALOG_CATEGORIES])
+                _log.info("startup catalog home prewarmed (parallel 160)")
             except Exception:
                 _log.info("startup catalog home prewarm partial", exc_info=True)
             # 预热 standalone 独立源库首屏窗口：这些库根首次打开要跨四类深翻
@@ -1467,14 +1459,23 @@ async def startup_prewarm_hot() -> None:
 async def _hot_worker(app: FastAPI):
     """榜单 + 海量库路由后台刷新。启动先读旧缓存，稍等再刷新；之后按配置轮询。"""
     if os.environ.get("FNMEDIA_ROLE") == "frontend":
+        _fe_warmed = False
         while not app.state.stop_hot.is_set():
             try:
                 if hasattr(chart_cache, "reload"):
                     chart_cache.reload()
+                if not _fe_warmed and not catalog.routes_stale():
+                    _fe_warmed = True
+                    _sem = asyncio.Semaphore(2)
+                    async def _fe_warm(cat):
+                        async with _sem:
+                            if catalog.available(cat):
+                                await catalog.get_window(cat, 0, 80)
+                    asyncio.create_task(asyncio.gather(*[_fe_warm(c) for c, _t, _ in catalogmod.CATALOG_CATEGORIES], return_exceptions=True))
             except Exception:
                 pass
             try:
-                await asyncio.wait_for(app.state.stop_hot.wait(), timeout=20)
+                await asyncio.wait_for(app.state.stop_hot.wait(), timeout=5)
             except asyncio.TimeoutError:
                 pass
         return
@@ -1505,7 +1506,7 @@ async def _hot_worker(app: FastAPI):
         if catalog_on:
             await _prewarm_catalog()
         try:
-            await asyncio.wait_for(app.state.stop_hot.wait(), timeout=300)
+            await asyncio.wait_for(app.state.stop_hot.wait(), timeout=60)
         except asyncio.TimeoutError:
             pass
 
