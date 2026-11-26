@@ -126,7 +126,7 @@ def _vtuple(v: str) -> tuple:
 
 
 def is_newer(latest: str, current: str | None = None) -> bool:
-    return _vtuple(latest) > _vtuple(current or current_version())
+    return _vtuple(latest) >= _vtuple(current or current_version())
 
 
 def edition_full() -> bool:

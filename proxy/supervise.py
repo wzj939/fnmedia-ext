@@ -194,9 +194,13 @@ def main():
         # 仅承载 /app/fnmedia-ext 管理窗口，媒体播放不依赖它。
         gw_sock = BASE / "fnmedia-ext.sock" if (BASE.parent / "ui").is_dir() \
             else STATE / "fnmedia-ext.sock"
+        fe_env = dict(env, FNMEDIA_ROLE="frontend")
+        bg_env = dict(env, FNMEDIA_ROLE="worker")
+        bg_cmd = (["ionice", "-c", "3", "nice", "-n", "19"] if os.path.exists("/usr/bin/ionice") else ["nice", "-n", "19"]) + [str(PY), str(PROXY / "bg_worker.py")]
+        bg = subprocess.Popen(bg_cmd, cwd=str(PROXY), env=bg_env)
         gw = subprocess.Popen(
             [str(PY), str(PROXY / "webui_gateway.py"), str(BASE), str(TARGET)],
-            cwd=str(PROXY), env=env)
+            cwd=str(PROXY), env=fe_env)
 
         # 捕获停止信号：先退出子进程再回滚
         stopping = {"v": False}
@@ -211,11 +215,14 @@ def main():
             if rc is not None:
                 log(f"uvicorn 异常退出 rc={rc}")
                 break
+            if 'bg' in locals() and bg.poll() is not None:
+                log(f"后台刮削 Worker 异常退出 rc={bg.returncode}，低优先级重启")
+                bg = subprocess.Popen(bg_cmd, cwd=str(PROXY), env=bg_env)
             if gw.poll() is not None:
                 log(f"桌面网关异常退出 rc={gw.returncode}，重启")
                 gw = subprocess.Popen(
                     [str(PY), str(PROXY / "webui_gateway.py"), str(BASE), str(TARGET)],
-                    cwd=str(PROXY), env=env)
+                    cwd=str(PROXY), env=fe_env)
             time.sleep(1)
     finally:
         # 先释放应用根目录里的桌面网关 socket 文件名，再等待子进程退出。
@@ -228,6 +235,12 @@ def main():
                 pass
             except Exception as e:
                 log(f"清理网关 socket 失败: {type(e).__name__}: {e}")
+        if 'bg' in locals() and bg.poll() is None:
+            bg.terminate()
+            try:
+                bg.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                bg.kill()
         if 'gw' in locals() and gw.poll() is None:
             gw.terminate()
             try:
