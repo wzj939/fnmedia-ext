@@ -17,7 +17,7 @@ if ! git diff --quiet VERSION; then
     git commit -m "chore: reset VERSION before rebase" VERSION
 fi
 
-if ! git rebase upstream/main; then
+if ! git rebase -X ours upstream/main; then
     echo "⚠️ 遇到极少数文件冲突！请解决冲突后执行：git add . && git rebase --continue，再重新运行本脚本"
     exit 1
 fi
