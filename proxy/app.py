@@ -1349,8 +1349,8 @@ async def lifespan(app: FastAPI):
 # 25s 超时，理论最坏 10x25=250s/轮，队尾分类要等前面慢源；4 路并
 # 发 + 120s 总预算后，慢源最多拖住一轮预算，不再拖垮整轮。信号量
 # 只限流、不多发请求，不放大对源站的压力。
-HOT_PREWARM_CONCURRENCY = 4
-HOT_PREWARM_BUDGET_SECONDS = 120.0
+HOT_PREWARM_CONCURRENCY = 12
+HOT_PREWARM_BUDGET_SECONDS = 180.0
 
 
 async def _prewarm_catalog(budget: float = HOT_PREWARM_BUDGET_SECONDS) -> None:
@@ -1365,7 +1365,7 @@ async def _prewarm_catalog(budget: float = HOT_PREWARM_BUDGET_SECONDS) -> None:
         async with sem:
             try:
                 if catalog.available(cat):
-                    await asyncio.wait_for(catalog.get_window(cat, 0, 22),
+                    await asyncio.wait_for(catalog.get_window(cat, 0, 320),
                                            timeout=25)
             except Exception:
                 _log.debug("_prewarm_catalog failed", exc_info=True)
@@ -1418,7 +1418,7 @@ async def startup_prewarm_hot() -> None:
             async def _warm_one(cat):
                 try:
                     if catalog.available(cat):
-                        await catalog.get_window(cat, 0, 160)
+                        await catalog.get_window(cat, 0, 320)
                 except Exception:
                     _log.debug("startup prewarm warm_one failed: cat=%s",
                                cat, exc_info=True)
@@ -1505,8 +1505,33 @@ async def _hot_worker(app: FastAPI):
         # 内存工人 3：gather + 信号量并发 + 每轮总预算（见 _prewarm_catalog）。
         if catalog_on:
             await _prewarm_catalog()
+        if charts_on:
+            try:
+                _all_charts = chart_cache.all_items() if hasattr(chart_cache, "all_items") else []
+                _unbound = [
+                    it["guid"] for it in _all_charts
+                    if it.get("guid")
+                    and store.get_title_by_guid(it["guid"]) is None
+                    and (_monotonic() - _CHART_FAILED_TS.get(it["guid"], 0) >= _CHART_FAILED_TTL)
+                ][:40]
+                if _unbound:
+                    _csem = asyncio.Semaphore(6)
+                    async def _bind_one_chart(cg: str):
+                        async with _csem:
+                            try:
+                                fut = start_resolve_chart(cg)
+                                if fut is not None:
+                                    await asyncio.wait_for(asyncio.shield(fut), timeout=15.0)
+                            except Exception:
+                                pass
+                    await asyncio.wait_for(
+                        asyncio.gather(*[_bind_one_chart(g) for g in _unbound], return_exceptions=True),
+                        timeout=90.0)
+                    _log.info("bg_worker chart sources pre-bound batch=%d", len(_unbound))
+            except Exception:
+                _log.debug("bg_worker chart prebind partial", exc_info=True)
         try:
-            await asyncio.wait_for(app.state.stop_hot.wait(), timeout=60)
+            await asyncio.wait_for(app.state.stop_hot.wait(), timeout=45)
         except asyncio.TimeoutError:
             pass
 
